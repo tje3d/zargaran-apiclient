@@ -10,7 +10,8 @@ type DepositType = 'irt' | string;
 type CardStatus = 'success' | 'pending' | 'rejected' | string;
 type OrderType = 'tpsl' | string;
 type TpslAction = 'created' | 'updated' | 'deleted';
-type WithdrawType = 'send' | 'neodigi' | 'usdt';
+type WithdrawType = 'irt' | 'usdt' | 'neodigi';
+type UsdtNetwork = 'trc20' | 'bep20';
 type GatewayType = 'zibal' | string;
 
 // --- Auth ---
@@ -193,8 +194,7 @@ interface HistoryFilters {
 
 interface MarginResponse {
   margin: number;
-  blocked: number;
-  available: number;
+  leverage: number;
 }
 
 interface Transaction {
@@ -234,15 +234,114 @@ interface WithdrawConstraintsResponse {
   }>;
 }
 
+// --- Accounting v2: Services Status ---
+
+interface TimeStatus {
+  active: boolean;
+  timeAllowed: boolean;
+  timeMessage: string | null;
+}
+
+interface SimpleStatus {
+  active: boolean;
+}
+
+interface ScheduleInfo {
+  start: string;
+  end: string;
+  days: string | null;
+}
+
+interface ServicesStatusResponse {
+  deposit: {
+    irt: TimeStatus;
+    usdt: SimpleStatus;
+    neodigi: SimpleStatus;
+    schedule: ScheduleInfo;
+  };
+  withdraw: {
+    irt: TimeStatus;
+    usdt: TimeStatus;
+    neodigi: SimpleStatus;
+    schedule_irt: ScheduleInfo;
+    schedule_usdt: ScheduleInfo;
+  };
+  rates: {
+    dollar_sell: string;
+    dollar_buy: string;
+  };
+  balance: {
+    margin: string;
+    usdt_available: number;
+  };
+}
+
+// --- Accounting v2: Deposit responses ---
+
+interface IrtDepositResponse {
+  paymentId: number;
+  link: string;
+  amount: number;
+  dollarSell: string;
+  commission: number;
+  wage: number;
+}
+
+interface UsdtDepositResponse {
+  address: string;
+  network: string;
+}
+
+interface NeodigiDepositResponse {
+  unique_code: string;
+  fullname: string;
+}
+
+interface PendingVerifyResponse {
+  hasPending: boolean;
+}
+
+interface ManualDepositResponse {
+  settleId: number;
+  dollarRate: string;
+  usdtAmount: number;
+}
+
+interface WalletValidationResponse {
+  valid: boolean;
+  address: string;
+  network: string;
+}
+
+interface ManualDepositData {
+  amount: string;
+  fishNumber: string;
+  image: string;
+}
+
+// --- Accounting v2: Deposit/Withdraw ---
+
 interface DepositResponse {
   success: boolean;
   url?: string;
   reference?: string;
+  paymentId?: number;
+  link?: string;
+  amount?: number;
+  dollarSell?: string;
+  commission?: number;
+  wage?: number;
 }
 
 interface WithdrawResponse {
   success: boolean;
   reference?: string;
+  settleId?: number;
+  margin?: number;
+  callMarginSell?: number;
+  callMarginBuy?: number;
+  irtValue?: number;
+  wage?: number;
 }
 
 // --- KYC ---
@@ -480,6 +579,10 @@ export class MoamelatClient {
 
   // --- Accounting Methods ---
 
+  async getServicesStatus(): Promise<ApiResponse<ServicesStatusResponse>> {
+    return this.request<ServicesStatusResponse>('GET', '/accounting/services-status', { auth: true });
+  }
+
   async getMargin(): Promise<ApiResponse<MarginResponse>> {
     return this.request<MarginResponse>('GET', '/accounting/margin', { auth: true });
   }
@@ -492,22 +595,56 @@ export class MoamelatClient {
     return this.request<DepositConstraintsResponse>('GET', '/accounting/deposit/constraints', { auth: true });
   }
 
-  async getWithdrawConstraints(cardNumber?: string): Promise<ApiResponse<WithdrawConstraintsResponse>> {
-    const query = cardNumber ? `?card_number=${encodeURIComponent(cardNumber)}` : '';
-    return this.request<WithdrawConstraintsResponse>('GET', `/accounting/withdraw/constraints${query}`, { auth: true });
+  async getWithdrawConstraints(cardNumber?: string, withdrawType?: WithdrawType): Promise<ApiResponse<WithdrawConstraintsResponse>> {
+    const params = new URLSearchParams();
+    if (cardNumber) params.set('cardnumber', cardNumber);
+    if (withdrawType) params.set('withdrawType', withdrawType);
+    const query = params.toString();
+    return this.request<WithdrawConstraintsResponse>('GET', `/accounting/withdraw/constraints${query ? `?${query}` : ''}`, { auth: true });
   }
 
-  async depositIRT(amount: number, gateway: GatewayType = 'zibal'): Promise<ApiResponse<DepositResponse>> {
-    return this.request<DepositResponse>('POST', '/accounting/deposit/irt', { body: { amount, gateway }, auth: true });
+  async depositIRT(amount: number, cardnumber: string): Promise<ApiResponse<IrtDepositResponse>> {
+    return this.request<IrtDepositResponse>('POST', '/accounting/deposit/irt', { body: { amount, cardnumber }, auth: true });
   }
 
-  async depositUSDT(amount: number, txId: string): Promise<ApiResponse<DepositResponse>> {
-    return this.request<DepositResponse>('POST', '/accounting/deposit/usdt', { body: { amount, tx_id: txId }, auth: true });
+  async depositManual(data: ManualDepositData): Promise<ApiResponse<ManualDepositResponse>> {
+    return this.request<ManualDepositResponse>('POST', '/accounting/deposit/manual', { body: { amount: data.amount, fishNumber: data.fishNumber, image: data.image }, auth: true });
   }
 
-  async withdraw(amount: number, type: WithdrawType, cardNumber?: string): Promise<ApiResponse<WithdrawResponse>> {
-    const body: Record<string, unknown> = { amount, type };
-    if (cardNumber) body.card_number = cardNumber;
+  async depositUSDT(network: UsdtNetwork = 'trc20'): Promise<ApiResponse<UsdtDepositResponse>> {
+    return this.request<UsdtDepositResponse>('GET', `/accounting/deposit/usdt?network=${network}`, { auth: true });
+  }
+
+  async getNeodigiDepositInfo(): Promise<ApiResponse<NeodigiDepositResponse>> {
+    return this.request<NeodigiDepositResponse>('GET', '/accounting/deposit/neodigi', { auth: true });
+  }
+
+  async checkPendingDepositVerify(): Promise<ApiResponse<PendingVerifyResponse>> {
+    return this.request<PendingVerifyResponse>('GET', '/accounting/deposit/pending-verify', { auth: true });
+  }
+
+  async validateWallet(address: string, network: UsdtNetwork = 'trc20'): Promise<ApiResponse<WalletValidationResponse>> {
+    return this.request<WalletValidationResponse>('POST', '/accounting/wallet/validate', { body: { address, network }, auth: true });
+  }
+
+  async withdraw(options: {
+    withdrawType: WithdrawType;
+    amount: number;
+    cardnumber?: string;
+    wallet?: string;
+    network?: UsdtNetwork;
+    neodigiAccount?: string;
+    neodigiName?: string;
+  }): Promise<ApiResponse<WithdrawResponse>> {
+    const body: Record<string, unknown> = {
+      withdrawType: options.withdrawType,
+      amount: options.amount,
+    };
+    if (options.cardnumber) body.cardnumber = options.cardnumber;
+    if (options.wallet) body.wallet = options.wallet;
+    if (options.network) body.network = options.network;
+    if (options.neodigiAccount) body.neodigiAccount = options.neodigiAccount;
+    if (options.neodigiName) body.neodigiName = options.neodigiName;
     return this.request<WithdrawResponse>('POST', '/accounting/withdraw', { body, auth: true });
   }
 

@@ -516,9 +516,41 @@ describe("MoamelatClient", () => {
   // ==================== Accounting Methods ====================
 
   describe("accounting methods", () => {
+    it("getServicesStatus should send GET request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: {
+          deposit: {
+            irt: { active: true, timeAllowed: true, timeMessage: null },
+            usdt: { active: true },
+            neodigi: { active: false },
+            schedule: { start: "08:00", end: "22:00", days: "1,2,3,4,5" },
+          },
+          withdraw: {
+            irt: { active: true, timeAllowed: true, timeMessage: null },
+            usdt: { active: true, timeAllowed: true, timeMessage: null },
+            neodigi: { active: false },
+            schedule_irt: { start: "09:00", end: "21:00", days: "1,2,3,4,5" },
+            schedule_usdt: { start: "00:00", end: "24:00", days: null },
+          },
+          rates: { dollar_sell: "980000", dollar_buy: "978000" },
+          balance: { margin: "1500.00", usdt_available: 1300.00 },
+        },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      const result = await client.getServicesStatus();
+
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/accounting/services-status");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(result).toEqual(mockData);
+    });
+
     it("getMargin should send GET request with auth", async () => {
       client.setToken("123:abc");
-      const mockData = { success: true, data: { margin: 1500, blocked: 200, available: 1300 } };
+      const mockData = { success: true, data: { margin: 1500, leverage: 3 } };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
       const result = await client.getMargin();
@@ -558,7 +590,7 @@ describe("MoamelatClient", () => {
       expect(options.headers["x-token"]).toBe("123:abc");
     });
 
-    it("getWithdrawConstraints without cardNumber should send GET request", async () => {
+    it("getWithdrawConstraints without params should send GET request", async () => {
       client.setToken("123:abc");
       const mockData = {
         success: true,
@@ -572,7 +604,7 @@ describe("MoamelatClient", () => {
       expect(url).toBe("https://api.test.com/accounting/withdraw/constraints");
     });
 
-    it("getWithdrawConstraints with cardNumber should include query param", async () => {
+    it("getWithdrawConstraints with cardNumber should include cardnumber query param", async () => {
       client.setToken("123:abc");
       const mockData = {
         success: true,
@@ -583,54 +615,211 @@ describe("MoamelatClient", () => {
       await client.getWithdrawConstraints("6037991234567890");
 
       const [url] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/accounting/withdraw/constraints?card_number=6037991234567890");
+      expect(url).toBe("https://api.test.com/accounting/withdraw/constraints?cardnumber=6037991234567890");
+    });
+
+    it("getWithdrawConstraints with withdrawType should include withdrawType query param", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: { minAmount: 10, maxAmount: 1000, fee: 1, cards: [] },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.getWithdrawConstraints(undefined, "usdt");
+
+      const [url] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/accounting/withdraw/constraints?withdrawType=usdt");
+    });
+
+    it("getWithdrawConstraints with both params should include both query params", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: { minAmount: 10, maxAmount: 1000, fee: 1, cards: [] },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.getWithdrawConstraints("6037991234567890", "irt");
+
+      const [url] = fetchMock.mock.calls[0]!;
+      expect(url).toContain("cardnumber=6037991234567890");
+      expect(url).toContain("withdrawType=irt");
     });
 
     it("depositIRT should send POST request with auth", async () => {
       client.setToken("123:abc");
-      const mockData = { success: true, data: { success: true, url: "https://gateway.zibal.ir/..." } };
+      const mockData = {
+        success: true,
+        data: { paymentId: 1234, link: "https://gateway.example.com/pay/...", amount: 1000000, dollarSell: "980000", commission: 1.02, wage: 10000 },
+      };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      await client.depositIRT(1000000, "zibal");
+      await client.depositIRT(1000000, "6037991234567890");
 
       const [url, options] = fetchMock.mock.calls[0]!;
       expect(url).toBe("https://api.test.com/accounting/deposit/irt");
-      expect(JSON.parse(options.body)).toEqual({ amount: 1000000, gateway: "zibal" });
+      expect(JSON.parse(options.body)).toEqual({ amount: 1000000, cardnumber: "6037991234567890" });
     });
 
-    it("depositUSDT should send POST request with auth", async () => {
+    it("depositUSDT should send GET request with network query param", async () => {
       client.setToken("123:abc");
-      const mockData = { success: true, data: { success: true } };
+      const mockData = {
+        success: true,
+        data: { address: "TJxR4f8QV...", network: "trc20" },
+      };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      await client.depositUSDT(100, "0xabc123...");
+      await client.depositUSDT("trc20");
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/accounting/deposit/usdt");
-      expect(JSON.parse(options.body)).toEqual({ amount: 100, tx_id: "0xabc123..." });
+      expect(url).toBe("https://api.test.com/accounting/deposit/usdt?network=trc20");
+      expect(options.method).toBe("GET");
+      expect(options.headers["x-token"]).toBe("123:abc");
     });
 
-    it("withdraw should send POST request with auth", async () => {
+    it("depositUSDT should default to trc20 network", async () => {
       client.setToken("123:abc");
-      const mockData = { success: true, data: { success: true, reference: "ref123" } };
+      const mockData = {
+        success: true,
+        data: { address: "TJxR4f8QV...", network: "trc20" },
+      };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      await client.withdraw(50, "send", "6037991234567890");
+      await client.depositUSDT();
+
+      const [url] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/accounting/deposit/usdt?network=trc20");
+    });
+
+    it("depositUSDT with bep20 should include correct query param", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: { address: "0xabc...", network: "bep20" },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.depositUSDT("bep20");
+
+      const [url] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/accounting/deposit/usdt?network=bep20");
+    });
+
+    it("withdraw with irt type should send POST request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: { settleId: 9012, margin: 1450.00, callMarginSell: 1200.00, callMarginBuy: 1100.00, irtValue: 48900000, wage: 50000 },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.withdraw({ withdrawType: "irt", amount: 50.00, cardnumber: "6037991234567890" });
 
       const [url, options] = fetchMock.mock.calls[0]!;
       expect(url).toBe("https://api.test.com/accounting/withdraw");
-      expect(JSON.parse(options.body)).toEqual({ amount: 50, type: "send", card_number: "6037991234567890" });
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(JSON.parse(options.body)).toEqual({ withdrawType: "irt", amount: 50.00, cardnumber: "6037991234567890" });
     });
 
-    it("withdraw without cardNumber should omit card_number", async () => {
+    it("withdraw with usdt type should include wallet and network", async () => {
       client.setToken("123:abc");
-      const mockData = { success: true, data: { success: true } };
+      const mockData = { success: true, data: { settleId: 9012, margin: 1450.00 } };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      await client.withdraw(50, "usdt");
+      await client.withdraw({ withdrawType: "usdt", amount: 100.00, wallet: "TJxR4f8QV...", network: "trc20" });
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(JSON.parse(options.body)).toEqual({ amount: 50, type: "usdt" });
+      expect(JSON.parse(options.body)).toEqual({ withdrawType: "usdt", amount: 100.00, wallet: "TJxR4f8QV...", network: "trc20" });
+    });
+
+    it("withdraw with neodigi type should include neodigiAccount and neodigiName", async () => {
+      client.setToken("123:abc");
+      const mockData = { success: true, data: { settleId: 9012 } };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.withdraw({ withdrawType: "neodigi", amount: 75.00, neodigiAccount: "12345", neodigiName: "John Doe" });
+
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(JSON.parse(options.body)).toEqual({ withdrawType: "neodigi", amount: 75.00, neodigiAccount: "12345", neodigiName: "John Doe" });
+    });
+
+    it("depositManual should send POST request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: { settleId: 5678, dollarRate: "980000", usdtAmount: 1.02 },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.depositManual({ amount: "1000000", fishNumber: "TX123456", image: "base64_or_url" });
+
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/accounting/deposit/manual");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(JSON.parse(options.body)).toEqual({ amount: "1000000", fishNumber: "TX123456", image: "base64_or_url" });
+    });
+
+    it("getNeodigiDepositInfo should send GET request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: { unique_code: "1234", fullname: "John Doe" },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      const result = await client.getNeodigiDepositInfo();
+
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/accounting/deposit/neodigi");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(result).toEqual(mockData);
+    });
+
+    it("checkPendingDepositVerify should send GET request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: { hasPending: false },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      const result = await client.checkPendingDepositVerify();
+
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/accounting/deposit/pending-verify");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(result).toEqual(mockData);
+    });
+
+    it("validateWallet should send POST request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: { valid: true, address: "TJxR4f8QV...", network: "trc20" },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.validateWallet("TJxR4f8QV...", "trc20");
+
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/accounting/wallet/validate");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(JSON.parse(options.body)).toEqual({ address: "TJxR4f8QV...", network: "trc20" });
+    });
+
+    it("validateWallet should default to trc20 network", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: { valid: true, address: "TJxR4f8QV...", network: "trc20" },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.validateWallet("TJxR4f8QV...");
+
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(JSON.parse(options.body)).toEqual({ address: "TJxR4f8QV...", network: "trc20" });
     });
   });
 

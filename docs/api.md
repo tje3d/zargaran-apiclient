@@ -491,7 +491,69 @@ x-token: {token}
 
 ### 6. Accounting (`/accounting`)
 
-#### 6.1 Get Margin/Balance
+#### 6.1 Get Services Status
+Returns comprehensive deposit/withdraw status, time limits, schedules, rates, and balance for the authenticated trader.
+
+```
+GET /accounting/services-status
+x-token: {token}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "deposit": {
+      "irt": {
+        "active": true,
+        "timeAllowed": true,
+        "timeMessage": null
+      },
+      "usdt": { "active": true },
+      "neodigi": { "active": false },
+      "schedule": {
+        "start": "08:00",
+        "end": "22:00",
+        "days": "1,2,3,4,5"
+      }
+    },
+    "withdraw": {
+      "irt": {
+        "active": true,
+        "timeAllowed": true,
+        "timeMessage": null
+      },
+      "usdt": {
+        "active": true,
+        "timeAllowed": true,
+        "timeMessage": null
+      },
+      "neodigi": { "active": false },
+      "schedule_irt": {
+        "start": "09:00",
+        "end": "21:00",
+        "days": "1,2,3,4,5"
+      },
+      "schedule_usdt": {
+        "start": "00:00",
+        "end": "24:00",
+        "days": null
+      }
+    },
+    "rates": {
+      "dollar_sell": "980000",
+      "dollar_buy": "978000"
+    },
+    "balance": {
+      "margin": "1500.00",
+      "usdt_available": 1300.00
+    }
+  }
+}
+```
+
+#### 6.2 Get Margin/Balance
 ```
 GET /accounting/margin
 x-token: {token}
@@ -503,19 +565,22 @@ x-token: {token}
   "success": true,
   "data": {
     "margin": 1500.00,
-    "blocked": 200.00,
-    "available": 1300.00
+    "leverage": 3
   }
 }
 ```
 
-#### 6.2 Get Transactions
+#### 6.3 Get Transactions
 ```
 GET /accounting/transactions?page=1&limit=20
 x-token: {token}
 ```
 
-#### 6.3 Get Deposit Constraints
+**Query Parameters:**
+- `page` - Page number (default: 1)
+- `type` - Filter by type (optional)
+
+#### 6.4 Get Deposit Constraints
 ```
 GET /accounting/deposit/constraints
 x-token: {token}
@@ -536,13 +601,19 @@ x-token: {token}
 }
 ```
 
-#### 6.4 Get Withdraw Constraints
+#### 6.5 Get Withdraw Constraints
 ```
-GET /accounting/withdraw/constraints?card_number={optional}
+GET /accounting/withdraw/constraints?cardnumber={optional}&withdrawType={optional}
 x-token: {token}
 ```
 
-#### 6.5 Deposit IRT (Toman)
+**Query Parameters:**
+- `cardnumber` - Card number for card-level limits (optional)
+- `withdrawType` - Type: `irt` | `usdt` (default: `irt`)
+
+#### 6.6 Deposit IRT (Gateway)
+Initiates a payment gateway deposit. The service checks time limits, payment status, KYC, pending verifications, deposit limits, and card validity.
+
 ```
 POST /accounting/deposit/irt
 x-token: {token}
@@ -550,34 +621,210 @@ Content-Type: application/json
 
 {
   "amount": 1000000,
-  "gateway": "zibal"
+  "cardnumber": "6037991234567890"
 }
 ```
 
-#### 6.6 Deposit USDT
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "paymentId": 1234,
+    "link": "https://gateway.example.com/pay/...",
+    "amount": 1000000,
+    "dollarSell": 980000,
+    "commission": 1.02,
+    "wage": 10000
+  }
+}
 ```
-POST /accounting/deposit/usdt
+
+**Error Codes:**
+- `TIME_LIMIT_DEPOSIT` - Outside deposit schedule
+- `PAYMENT_DISABLED` - Deposit disabled (system or trader level)
+- `KYC_REQUIRED` - KYC not completed
+- `PENDING_VERIFY_EXISTS` - Awaiting verification of previous deposit
+- `DEPOSIT_LIMIT_EXCEEDED` - Daily deposit limit exceeded
+- `INVALID_CARD` - Card not found or not verified
+- `PAYMENT_CREATE_FAILED` - Failed to create payment record
+- `PAYMENT_GATEWAY_FAILED` - Gateway rejected the request
+
+#### 6.7 Deposit IRT (Manual)
+Submits a manual deposit with receipt image. The service checks time limits, payment status, KYC, and deposit limits.
+
+```
+POST /accounting/deposit/manual
 x-token: {token}
 Content-Type: application/json
 
 {
-  "amount": 100.00,
-  "tx_id": "0xabc123..."
+  "amount": "1000000",
+  "fishNumber": "TX123456",
+  "image": "base64_or_url"
 }
 ```
 
-#### 6.7 Withdraw
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "settleId": 5678,
+    "dollarRate": 980000,
+    "usdtAmount": 1.02
+  }
+}
+```
+
+#### 6.8 Check Pending Deposit Verification
+Checks if the trader has a pending deposit awaiting verification.
+
+```
+GET /accounting/deposit/pending-verify
+x-token: {token}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "hasPending": false
+  }
+}
+```
+
+#### 6.9 Deposit USDT
+Returns the USDT deposit wallet address for the trader. Generates address if not exists.
+
+```
+GET /accounting/deposit/usdt?network=trc20
+x-token: {token}
+```
+
+**Query Parameters:**
+- `network` - `trc20` | `bep20` (default: `trc20`)
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "address": "TJxR4f8QV...",
+    "network": "trc20"
+  }
+}
+```
+
+**Error Codes:**
+- `INVALID_NETWORK` - Network not supported
+- `USDT_DEPOSIT_DISABLED` - USDT deposit deactivated
+- `KYC_REQUIRED` - KYC not completed
+- `WALLET_CREATE_FAILED` - Failed to generate wallet address
+
+#### 6.10 Deposit Neodigi
+Returns Neodigi deposit info (unique code and fullname).
+
+```
+GET /accounting/deposit/neodigi
+x-token: {token}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "unique_code": "1234",
+    "fullname": "John Doe"
+  }
+}
+```
+
+**Error Codes:**
+- `NEODIGI_DEPOSIT_DISABLED` - Neodigi deposit deactivated (whitelisted traders bypass)
+
+#### 6.11 Withdraw
+Processes a withdrawal request. The service checks time limits, KYC, status flags, limits, open trade blocking, and card validation.
+
 ```
 POST /accounting/withdraw
 x-token: {token}
 Content-Type: application/json
 
 {
+  "withdrawType": "irt",       // irt | usdt | neodigi
   "amount": 50.00,
-  "type": "send",        // send | neodigi | usdt
-  "card_number": "6037991234567890"
+  "cardnumber": "6037991234567890",   // required for irt
+  "wallet": "TJxR4f8QV...",           // required for usdt
+  "network": "trc20",                 // required for usdt
+  "neodigiAccount": "12345",          // required for neodigi
+  "neodigiName": "John Doe"           // required for neodigi
 }
 ```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "settleId": 9012,
+    "margin": 1450.00,
+    "callMarginSell": 1200.00,
+    "callMarginBuy": 1100.00,
+    "irtValue": 48900000,
+    "wage": 50000
+  }
+}
+```
+
+**Error Codes:**
+- `TIME_LIMIT_WITHDRAW` - Outside withdrawal schedule
+- `KYC_REQUIRED` - KYC not completed
+- `WITHDRAW_DISABLED` - IRT withdrawal disabled
+- `USDT_WITHDRAW_DISABLED` - USDT withdrawal disabled
+- `NEODIGI_WITHDRAW_DISABLED` - Neodigi withdrawal disabled
+- `NEODIGI_INFO_REQUIRED` - Missing neodigi account/name
+- `INVALID_AMOUNT` - Invalid amount
+- `INVALID_NETWORK` - Invalid network for USDT
+- `WALLET_REQUIRED` - Missing wallet address
+- `WITHDRAW_LIMIT_EXCEEDED` - Daily withdrawal limit exceeded
+- `INSUFFICIENT_MARGIN` - Amount exceeds margin
+- `INSUFFICIENT_USDT_BALANCE` - Amount exceeds available USDT
+- `WITHDRAW_OPEN_TRADE_DISABLED` - Withdrawal with open trades not allowed
+- `BLOCKED_BY_OPEN_TRADES` - Amount blocked by open trades
+- `CARD_REQUIRED` - Missing card number for IRT
+- `INVALID_CARD` - Card not found or not verified
+
+#### 6.12 Validate Wallet Address
+Validates a wallet address format and checks if it's an internal (same-platform) address.
+
+```
+POST /accounting/wallet/validate
+x-token: {token}
+Content-Type: application/json
+
+{
+  "address": "TJxR4f8QV...",
+  "network": "trc20"       // trc20 | bep20
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "valid": true,
+    "address": "TJxR4f8QV...",
+    "network": "trc20"
+  }
+}
+```
+
+**Error Codes:**
+- `400` - Invalid address format or internal address detected
 
 ---
 
