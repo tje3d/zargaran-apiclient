@@ -104,7 +104,7 @@ interface CapacityResponse {
   sell: number;
 }
 
-interface ReferralResponse {
+export interface ReferralResponse {
   active: boolean;
   referralCount: number;
   totalIncome: number;
@@ -365,11 +365,8 @@ interface WithdrawResponse {
 
 export interface KycStatusResponse {
   status: KycStatus;
-  steps: {
-    step1: boolean;
-    step2: boolean;
-    step3: boolean;
-  };
+  level: string;
+  isActive: boolean;
 }
 
 interface KycStep1Data {

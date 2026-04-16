@@ -838,9 +838,11 @@ describe("MoamelatClient", () => {
       client.setToken("123:abc");
       const mockData = {
         success: true,
+        message: "ok",
         data: {
           status: "pending",
-          steps: { step1: true, step2: true, step3: false },
+          level: "در انتظار احراز هویت",
+          isActive: false,
         },
       };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
