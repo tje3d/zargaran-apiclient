@@ -25,36 +25,117 @@ x-token: {trader_id}:{random_hash}
 
 ---
 
+## TypeScript Client (`MoamelatClient`)
+
+### Installation
+```bash
+npm install zargaran-apiclient
+```
+
+### Quick Start
+```typescript
+import { MoamelatClient } from "zargaran-apiclient";
+
+const client = new MoamelatClient({
+  baseUrl: "https://api.moamelat.com",
+});
+
+// Listen to auth events
+client.on("login", (data) => {
+  console.log("Logged in as", data.trader.nickname);
+});
+
+client.on("profileChange", ({ previous, current }) => {
+  console.log("Margin updated from", previous?.margin, "to", current.margin);
+});
+
+client.on("invalidToken", (error) => {
+  console.warn("Session expired", error.message);
+});
+
+// Login
+await client.loginByIdentifier("09123456789", "password123");
+```
+
+### Constructor Options
+```typescript
+interface ClientOptions {
+  baseUrl?: string;                    // default: https://api.moamelat.com
+  token?: string;                      // initial token
+  maxRetries?: number;                 // default: 3
+  retryDelayMs?: number;               // default: 1000
+  persistAuth?: boolean;               // default: true
+  autoRefreshProfile?: boolean;        // default: true
+  profileRefreshIntervalMs?: number;   // default: 60000 (1 minute)
+  storage?: StorageAdapter;            // custom storage override
+  storageKeyPrefix?: string;           // default: "moamelat"
+}
+```
+
+### Persistent Authentication
+By default, the client automatically persists the token, trader info, and cached profile so the session survives page reloads.
+
+- **Browser**: uses `localStorage` when available.
+- **Node.js / test environments**: falls back to an in-memory adapter.
+
+You can provide a custom `StorageAdapter`:
+```typescript
+import { MoamelatClient, StorageAdapter } from "zargaran-apiclient";
+
+const myStorage: StorageAdapter = {
+  getItem: (key) => /* ... */,
+  setItem: (key, value) => /* ... */,
+  removeItem: (key) => /* ... */,
+};
+
+const client = new MoamelatClient({ storage: myStorage });
+```
+
+### Events
+Subscribe to lifecycle events with `.on(event, listener)`. The returned function unsubscribes the listener.
+
+| Event            | Payload                                    | Description                                      |
+|------------------|--------------------------------------------|--------------------------------------------------|
+| `login`          | `LoginResponse`                            | Emitted after a successful login.                |
+| `logout`         | `void`                                     | Emitted after logout.                            |
+| `invalidToken`   | `ApiError`                                 | Emitted when a request returns `401`/`403` or a token-related error. |
+| `authChange`     | `AuthState`                                | Emitted whenever token/trader/profile changes.   |
+| `profileChange`  | `{ previous: ProfileResponse \| null, current: ProfileResponse }` | Emitted when the background profile refresh detects a change. |
+
+```typescript
+const unsubscribe = client.on("authChange", (state) => {
+  console.log("Authenticated:", state.token != null);
+});
+
+// Later...
+unsubscribe();
+```
+
+### Auth State Helpers
+```typescript
+client.isAuthenticated();      // boolean
+client.getToken();             // string | null
+client.getTrader();            // LoginResponse['trader'] | null
+client.getCachedProfile();     // ProfileResponse | null
+client.getAuthState();         // { token, trader, profile }
+```
+
+### Profile Auto-Refresh
+When `autoRefreshProfile` is `true` (default), the client:
+1. Immediately fetches `/trader/profile` after login and caches it.
+2. Starts a background timer (default every 60 seconds) to keep the profile updated.
+3. Emits `profileChange` **only** when the profile data actually differs from the cached version.
+4. Stops the timer on logout or when the token becomes invalid.
+
+---
+
 ## API Endpoints
 
 ### 1. Authentication (`/auth`)
 
-#### 1.1 Get Trader by Identifier
-Check if a trader exists before login.
-
+#### 1.1 Login with Identifier
 ```
-GET /auth/trader?identifier={chat_id_or_phone}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "data": {
-    "trader": {
-      "id": 123,
-      "chat_id": "987654321",
-      "tell": "09123456789",
-      "fullname": "John Doe",
-      "has_password": true
-    }
-  }
-}
-```
-
-#### 1.2 Login with Password
-```
-POST /auth/login/password
+POST /auth/login
 Content-Type: application/json
 
 {
@@ -79,24 +160,25 @@ Content-Type: application/json
 }
 ```
 
-#### 1.3 Login with Username
+#### 1.2 Login with Username
 ```
-POST /auth/login/username
+POST /auth/login
 Content-Type: application/json
 
 {
-  "username": "09123456789",
+  "id": "john_trader",     // username mapped to id internally
   "password": "userpass123"
 }
 ```
 
-#### 1.4 Send Verification Code
+#### 1.3 Send Verification Code
 ```
 POST /auth/send-code
 Content-Type: application/json
 
 {
-  "trader_id": 123,
+  "tell": "09123456789",
+  "chat_id": "987654321",
   "type": "set_password"   // set_password | reset_password
 }
 ```
@@ -112,19 +194,7 @@ Content-Type: application/json
 }
 ```
 
-#### 1.5 Verify Code
-```
-POST /auth/verify-code
-Content-Type: application/json
-
-{
-  "trader_id": 123,
-  "code": "12345",
-  "type": "set_password"
-}
-```
-
-#### 1.6 Set Password (with verification)
+#### 1.4 Set Password (with verification)
 ```
 POST /auth/set-password
 Content-Type: application/json
@@ -136,7 +206,7 @@ Content-Type: application/json
 }
 ```
 
-#### 1.7 Request Change Password (Protected)
+#### 1.5 Request Change Password (Protected)
 ```
 POST /auth/change-password/request
 x-token: {token}
@@ -147,7 +217,7 @@ Content-Type: application/json
 }
 ```
 
-#### 1.8 Change Password (Protected)
+#### 1.6 Change Password (Protected)
 ```
 POST /auth/change-password
 x-token: {token}
@@ -157,6 +227,19 @@ Content-Type: application/json
   "new_password": "newpass456",
   "code": "54321"
 }
+```
+
+#### 1.7 Logout
+```
+POST /auth/logout
+x-token: {token}
+```
+
+#### 1.8 Device Management
+```
+GET  /auth/devices
+POST /auth/devices/delete
+POST /auth/devices/delete-others
 ```
 
 ---
@@ -198,7 +281,7 @@ x-token: {token}
 
 #### 2.2 Get Open Trades
 ```
-GET /trader/open-trades
+GET /order/open-trades
 x-token: {token}
 ```
 
@@ -230,7 +313,7 @@ x-token: {token}
 
 #### 2.3 Get Capacity
 ```
-GET /trader/capacity?rate={optional_price}
+GET /order/capacity?rate={optional_price}
 x-token: {token}
 ```
 
@@ -281,11 +364,11 @@ Content-Type: application/json
 
 ---
 
-### 3. Trading (`/trader`)
+### 3. Trading (`/order`)
 
 #### 3.1 Open Market Trade (Instant)
 ```
-POST /trader/trade
+POST /order/trade
 x-token: {token}
 Content-Type: application/json
 
@@ -323,18 +406,18 @@ Content-Type: application/json
 
 #### 3.2 Close Trade
 ```
-POST /trader/close
+POST /order/close
 x-token: {token}
 Content-Type: application/json
 
 {
-  "trade_id": 456
+  "id": 456
 }
 ```
 
 #### 3.3 Close All Trades
 ```
-POST /trader/close-all
+POST /order/closeAll
 x-token: {token}
 Content-Type: application/json
 
@@ -345,7 +428,7 @@ Content-Type: application/json
 
 #### 3.4 Change Leverage
 ```
-POST /trader/leverage
+POST /trader/changeLeverage
 x-token: {token}
 Content-Type: application/json
 
@@ -369,16 +452,16 @@ Content-Type: application/json
 
 ---
 
-### 4. TP/SL Management (`/trader`)
+### 4. TP/SL & Limit Orders (`/order`)
 
 #### 4.1 Update TP/SL
 ```
-POST /trader/tpsl
+POST /order/setTpSl
 x-token: {token}
 Content-Type: application/json
 
 {
-  "trade_id": 456,
+  "id": 456,
   "tp": 1900.00,     // 0 to remove
   "sl": 1800.00      // 0 to remove
 }
@@ -403,54 +486,39 @@ Content-Type: application/json
 - `SL_TOO_CLOSE` - SL too close to current price
 - `PENDING_DISABLED` - Pending orders disabled
 
-#### 4.2 Get Pending Orders
+#### 4.2 Create Limit Order
 ```
-GET /trader/pending?status=new,step1
+POST /order/pending
 x-token: {token}
-```
+Content-Type: application/json
 
-**Response:**
-```json
 {
-  "success": true,
-  "data": {
-    "orders": [
-      {
-        "id": 789,
-        "trade_id": 456,
-        "type": "buy",
-        "order_type": "tpsl",
-        "number": 5,
-        "price": 1850.00,
-        "base_price": 1875.00,
-        "tp": 1900.00,
-        "sl": 1800.00,
-        "status": "step1",
-        "date": 1712345678
-      }
-    ]
-  }
+  "type": "buy",
+  "amount": 5,
+  "price": 1850.00,
+  "tp": 1900.00,      // optional
+  "sl": 1800.00       // optional
 }
 ```
 
 #### 4.3 Cancel Pending Order
 ```
-POST /trader/pending/cancel
+POST /order/deleteOrder
 x-token: {token}
 Content-Type: application/json
 
 {
-  "pending_id": 789
+  "id": 789
 }
 ```
 
 ---
 
-### 5. Trade History (`/trader`)
+### 5. Trade History & Trading Data (`/order`)
 
 #### 5.1 Get Trade History
 ```
-GET /trader/history?page=1&limit=20&type=buy&from_date=1711929600&to_date=1712016000
+GET /order/history?page=1&limit=20&type=buy&from_date=1711929600&to_date=1712016000
 x-token: {token}
 ```
 
@@ -483,6 +551,51 @@ x-token: {token}
     "page": 1,
     "limit": 20,
     "totalPages": 8
+  }
+}
+```
+
+#### 5.2 Get Trading Data (Order Load)
+```
+GET /order/load
+x-token: {token}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "trader": {
+      "id": 123,
+      "tell": "09123456789",
+      "nickname": "john",
+      "margin": "1000.00",
+      "leverage": 1,
+      "open_trades": 2
+    },
+    "trades": [
+      {
+        "id": 456,
+        "type": "buy",
+        "amount": 5,
+        "price": "1850.25",
+        "remain_amount": 5,
+        "time": 1712345678
+      }
+    ],
+    "pendings": [
+      {
+        "id": 789,
+        "type": "buy",
+        "number": 3,
+        "price": 1840,
+        "status": "new"
+      }
+    ],
+    "wsServerUrl": "wss://api.moamelat.com/ws",
+    "chartToken": "token123",
+    "chartLink": "https://chart.test"
   }
 }
 ```
@@ -855,12 +968,15 @@ x-token: {token}
 ```
 POST /kyc/step1
 x-token: {token}
-Content-Type: multipart/form-data
+Content-Type: application/json
 
 {
   "fullname": "John Doe",
-  "national_id": "0012345678",
-  "birth_date": "1370/01/01"
+  "nid": "0012345678",
+  "mobile": "09123456789",
+  "year": "1370",
+  "month": "01",
+  "day": "01"
 }
 ```
 
@@ -871,8 +987,8 @@ x-token: {token}
 Content-Type: multipart/form-data
 
 {
-  "id_card_front": <file>,
-  "id_card_back": <file>
+  "nidPic": <file>,
+  "commitment": <file>
 }
 ```
 
@@ -883,7 +999,7 @@ x-token: {token}
 Content-Type: multipart/form-data
 
 {
-  "selfie": <file>
+  "commitmentSelfi": <file>
 }
 ```
 
@@ -922,9 +1038,7 @@ x-token: {token}
 Content-Type: application/json
 
 {
-  "bank": "Mellat",
-  "number": "6037991234567890",
-  "shaba": "IR123456789012345678901234"
+  "cardnumber": "6037991234567890"
 }
 ```
 
@@ -935,7 +1049,7 @@ x-token: {token}
 Content-Type: application/json
 
 {
-  "card_id": 1
+  "id": 1
 }
 ```
 
@@ -1096,8 +1210,8 @@ interface AppState {
 
 ## Implementation Notes
 
-1. **Token Storage**: Store token in localStorage or secure cookie
-2. **Token Refresh**: Implement token refresh before expiry
+1. **Token Storage**: The client handles this automatically via `persistAuth` (uses `localStorage` in browsers and memory fallback in Node.js)
+2. **Profile Refresh**: The client auto-refreshes `/trader/profile` on a timer when `autoRefreshProfile` is enabled
 3. **Error Handling**: Show Persian error messages from API
 4. **Rate Limiting**: Handle 429 errors with retry logic
 5. **Price Updates**: Reconnect WebSocket on disconnect

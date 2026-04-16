@@ -16,20 +16,9 @@ type GatewayType = 'zibal' | string;
 
 // --- Auth ---
 
-interface TraderIdentifier {
-  id: number;
-  chat_id: string;
-  tell: string;
-  fullname: string;
-  has_password: boolean;
-}
-
-interface GetTraderResponse {
-  trader: TraderIdentifier;
-}
-
 interface LoginResponse {
   token: string;
+  device_id?: string;
   trader: {
     id: number;
     tell: string;
@@ -39,12 +28,28 @@ interface LoginResponse {
 }
 
 interface SendCodeResponse {
-  mobile: string;
-  trader_id: number;
+  mobile?: string;
+  trader_id?: number;
 }
 
-interface VerifyCodeResponse {
-  success: boolean;
+export interface Device {
+  id: number;
+  device_id: string;
+  device_name: string;
+  device_type: string;
+  user_agent: string;
+  ip_address: string;
+  last_activity: number;
+  created_at: number;
+  is_active: number;
+}
+
+interface DeviceListResponse {
+  devices: Device[];
+}
+
+interface LogoutResponse {
+  message: string;
 }
 
 // --- Profile ---
@@ -68,6 +73,9 @@ interface ProfileResponse {
     sell: number;
     buy: number;
   };
+  call_margin_sell?: string;
+  call_margin_buy?: string;
+  wsServerUrl?: string;
 }
 
 // --- Trades ---
@@ -138,22 +146,37 @@ interface TpslResponse {
   action: TpslAction;
 }
 
-interface PendingOrder {
+interface CreateLimitOrderResponse {
   id: number;
-  trade_id: number;
-  type: TradeType;
-  order_type: OrderType;
-  number: number;
-  price: number;
-  base_price: number;
-  tp: number;
-  sl: number;
-  status: PendingStatus;
-  date: number;
 }
 
-interface PendingOrdersResponse {
-  orders: PendingOrder[];
+interface OrderLoadResponse {
+  trader: {
+    id: number;
+    tell: string;
+    nickname: string;
+    margin: string;
+    leverage: number;
+    open_trades: number;
+  };
+  trades: Array<{
+    id: number;
+    type: TradeType;
+    amount: number;
+    price: string;
+    remain_amount: number;
+    time: number;
+  }>;
+  pendings: Array<{
+    id: number;
+    type: TradeType;
+    number: number;
+    price: number;
+    status: string;
+  }>;
+  wsServerUrl: string;
+  chartToken: string;
+  chartLink: string;
 }
 
 interface CancelPendingResponse {
@@ -345,7 +368,7 @@ interface WithdrawResponse {
 
 // --- KYC ---
 
-interface KycStatusResponse {
+export interface KycStatusResponse {
   status: KycStatus;
   steps: {
     step1: boolean;
@@ -355,21 +378,21 @@ interface KycStatusResponse {
 }
 
 interface KycStep1Data {
-  [key: string]: string | File;
   fullname: string;
-  national_id: string;
-  birth_date: string;
+  nid: string;
+  mobile?: string;
+  year?: string;
+  month?: string;
+  day?: string;
 }
 
 interface KycStep2Data {
-  [key: string]: string | File;
-  id_card_front: File;
-  id_card_back: File;
+  nidPic?: File | string;
+  commitment?: File | string;
 }
 
 interface KycStep3Data {
-  [key: string]: string | File;
-  selfie: File;
+  commitmentSelfi?: File | string;
 }
 
 interface KycResponse {
@@ -389,13 +412,6 @@ interface Card {
 
 interface CardListResponse {
   cards: Card[];
-}
-
-interface AddCardData {
-  [key: string]: string;
-  bank: string;
-  number: string;
-  shaba: string;
 }
 
 interface AddCardResponse {
@@ -431,6 +447,60 @@ export class ApiError extends Error {
   }
 }
 
+// ==================== Storage Adapters ====================
+
+export interface StorageAdapter {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
+export function createLocalStorageAdapter(): StorageAdapter | null {
+  if (
+    typeof globalThis !== 'undefined' &&
+    typeof globalThis.localStorage !== 'undefined'
+  ) {
+    return {
+      getItem: (key) => globalThis.localStorage.getItem(key),
+      setItem: (key, value) => globalThis.localStorage.setItem(key, value),
+      removeItem: (key) => globalThis.localStorage.removeItem(key),
+    };
+  }
+  return null;
+}
+
+export function createMemoryStorageAdapter(): StorageAdapter {
+  const store = new Map<string, string>();
+  return {
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => store.set(key, value),
+    removeItem: (key) => store.delete(key),
+  };
+}
+
+// ==================== Events ====================
+
+export type ClientEvent = 'login' | 'logout' | 'invalidToken' | 'authChange' | 'profileChange';
+
+export interface AuthState {
+  token: string | null;
+  trader: LoginResponse['trader'] | null;
+  profile: ProfileResponse | null;
+}
+
+export interface ProfileChangePayload {
+  previous: ProfileResponse | null;
+  current: ProfileResponse;
+}
+
+interface ClientEventMap {
+  login: LoginResponse;
+  logout: void;
+  invalidToken: ApiError;
+  authChange: AuthState;
+  profileChange: ProfileChangePayload;
+}
+
 // ==================== Client ====================
 
 interface ClientOptions {
@@ -438,11 +508,18 @@ interface ClientOptions {
   token?: string;
   maxRetries?: number;
   retryDelayMs?: number;
+  persistAuth?: boolean;
+  autoRefreshProfile?: boolean;
+  profileRefreshIntervalMs?: number;
+  storage?: StorageAdapter;
+  storageKeyPrefix?: string;
 }
 
 const RETRYABLE_CODES = ['RATE_LIMITED', 'BOT_DISABLED'];
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY = 1000;
+const DEFAULT_STORAGE_KEY_PREFIX = 'moamelat';
+const DEFAULT_PROFILE_REFRESH_INTERVAL_MS = 60000;
 
 export class MoamelatClient {
   private baseUrl: string;
@@ -450,17 +527,169 @@ export class MoamelatClient {
   private maxRetries: number;
   private retryDelayMs: number;
 
+  // Auth state
+  private trader: LoginResponse['trader'] | null = null;
+  private cachedProfile: ProfileResponse | null = null;
+
+  // Persistence
+  private persistAuth: boolean;
+  private autoRefreshProfile: boolean;
+  private profileRefreshIntervalMs: number;
+  private profileRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  private storage: StorageAdapter | null;
+  private storageKeyPrefix: string;
+
+  // Events
+  private events = new Map<ClientEvent, Set<(payload: any) => void>>();
+
   constructor(options: ClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? 'https://api.moamelat.com';
     this.token = options.token ?? null;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.retryDelayMs = options.retryDelayMs ?? DEFAULT_RETRY_DELAY;
+    this.persistAuth = options.persistAuth ?? true;
+    this.autoRefreshProfile = options.autoRefreshProfile ?? true;
+    this.profileRefreshIntervalMs =
+      options.profileRefreshIntervalMs ?? DEFAULT_PROFILE_REFRESH_INTERVAL_MS;
+    this.storageKeyPrefix = options.storageKeyPrefix ?? DEFAULT_STORAGE_KEY_PREFIX;
+
+    if (this.persistAuth) {
+      this.storage = options.storage ?? createLocalStorageAdapter() ?? createMemoryStorageAdapter();
+      this._restoreFromStorage();
+    } else {
+      this.storage = null;
+    }
+
+    if (this.token && this.autoRefreshProfile) {
+      this.startProfileRefresh();
+    }
+  }
+
+  // --- Event Management ---
+
+  on<E extends keyof ClientEventMap>(
+    event: E,
+    listener: (payload: ClientEventMap[E]) => void,
+  ): () => void {
+    if (!this.events.has(event)) {
+      this.events.set(event, new Set());
+    }
+    this.events.get(event)!.add(listener);
+    return () => this.off(event, listener);
+  }
+
+  off<E extends keyof ClientEventMap>(
+    event: E,
+    listener: (payload: ClientEventMap[E]) => void,
+  ): void {
+    this.events.get(event)?.delete(listener);
+  }
+
+  private emit<E extends keyof ClientEventMap>(event: E, payload: ClientEventMap[E]): void {
+    this.events.get(event)?.forEach((listener) => {
+      try {
+        listener(payload);
+      } catch {
+        // Ignore listener errors
+      }
+    });
+  }
+
+  // --- Storage Helpers ---
+
+  private _authKey(): string {
+    return `${this.storageKeyPrefix}:auth`;
+  }
+
+  private _profileKey(): string {
+    return `${this.storageKeyPrefix}:profile`;
+  }
+
+  private _persistAuth(): void {
+    if (!this.persistAuth || !this.storage) return;
+    const payload = JSON.stringify({ token: this.token, trader: this.trader });
+    this.storage.setItem(this._authKey(), payload);
+  }
+
+  private _persistProfile(): void {
+    if (!this.persistAuth || !this.storage) return;
+    if (this.cachedProfile) {
+      this.storage.setItem(this._profileKey(), JSON.stringify(this.cachedProfile));
+    } else {
+      this.storage.removeItem(this._profileKey());
+    }
+  }
+
+  private _restoreFromStorage(): void {
+    if (!this.persistAuth || !this.storage) return;
+    try {
+      const authRaw = this.storage.getItem(this._authKey());
+      if (authRaw) {
+        const parsed = JSON.parse(authRaw) as { token?: string; trader?: LoginResponse['trader'] };
+        if (parsed.token) {
+          this.token = parsed.token;
+        }
+        if (parsed.trader) {
+          this.trader = parsed.trader;
+        }
+      }
+    } catch {
+      // Ignore parse errors
+    }
+
+    try {
+      const profileRaw = this.storage.getItem(this._profileKey());
+      if (profileRaw) {
+        this.cachedProfile = JSON.parse(profileRaw) as ProfileResponse;
+      }
+    } catch {
+      // Ignore parse errors
+    }
+  }
+
+  private _clearStorage(): void {
+    if (!this.persistAuth || !this.storage) return;
+    this.storage.removeItem(this._authKey());
+    this.storage.removeItem(this._profileKey());
+  }
+
+  // --- Profile Refresh Timer ---
+
+  private startProfileRefresh(): void {
+    this.stopProfileRefresh();
+    if (!this.autoRefreshProfile || !this.token) return;
+    this.profileRefreshTimer = setInterval(() => {
+      this._fetchAndCacheProfile().catch(() => {
+        // Ignore background refresh errors
+      });
+    }, this.profileRefreshIntervalMs);
+  }
+
+  private stopProfileRefresh(): void {
+    if (this.profileRefreshTimer) {
+      clearInterval(this.profileRefreshTimer);
+      this.profileRefreshTimer = null;
+    }
+  }
+
+  private async _fetchAndCacheProfile(): Promise<void> {
+    const result = await this.getProfile();
+    const profile = result.data;
+    const changed = JSON.stringify(profile) !== JSON.stringify(this.cachedProfile);
+    if (changed) {
+      const previous = this.cachedProfile;
+      this.cachedProfile = profile;
+      this._persistProfile();
+      this.emit('profileChange', { previous, current: profile });
+      this.emit('authChange', this.getAuthState());
+    }
   }
 
   // --- Token Management ---
 
   setToken(token: string): void {
     this.token = token;
+    this._persistAuth();
   }
 
   getToken(): string | null {
@@ -468,41 +697,134 @@ export class MoamelatClient {
   }
 
   clearToken(): void {
+    this.stopProfileRefresh();
     this.token = null;
+    this.trader = null;
+    this.cachedProfile = null;
+    this._clearStorage();
+  }
+
+  // --- Auth Getters ---
+
+  isAuthenticated(): boolean {
+    return !!this.token;
+  }
+
+  getTrader(): LoginResponse['trader'] | null {
+    return this.trader;
+  }
+
+  getCachedProfile(): ProfileResponse | null {
+    return this.cachedProfile;
+  }
+
+  getAuthState(): AuthState {
+    return {
+      token: this.token,
+      trader: this.trader,
+      profile: this.cachedProfile,
+    };
   }
 
   // --- Auth Methods ---
 
-  async getTrader(identifier: string): Promise<ApiResponse<GetTraderResponse>> {
-    return this.request<GetTraderResponse>('GET', `/auth/trader?identifier=${encodeURIComponent(identifier)}`);
-  }
-
   async loginByIdentifier(id: string, password: string): Promise<ApiResponse<LoginResponse>> {
-    return this.request<LoginResponse>('POST', '/auth/login/password', { body: { id, password } });
+    const result = await this.request<LoginResponse>('POST', '/auth/login', {
+      body: { id, password },
+    });
+    if (result.success && result.data) {
+      this.token = result.data.token;
+      this.trader = result.data.trader;
+      this._persistAuth();
+      this.emit('login', result.data);
+      this.emit('authChange', this.getAuthState());
+      if (this.autoRefreshProfile) {
+        await this._fetchAndCacheProfile().catch(() => {
+          // Ignore initial profile fetch errors
+        });
+        this.startProfileRefresh();
+      }
+    }
+    return result;
   }
 
   async loginByUsername(username: string, password: string): Promise<ApiResponse<LoginResponse>> {
-    return this.request<LoginResponse>('POST', '/auth/login/username', { body: { username, password } });
+    const result = await this.request<LoginResponse>('POST', '/auth/login', {
+      body: { id: username, password },
+    });
+    if (result.success && result.data) {
+      this.token = result.data.token;
+      this.trader = result.data.trader;
+      this._persistAuth();
+      this.emit('login', result.data);
+      this.emit('authChange', this.getAuthState());
+      if (this.autoRefreshProfile) {
+        await this._fetchAndCacheProfile().catch(() => {
+          // Ignore initial profile fetch errors
+        });
+        this.startProfileRefresh();
+      }
+    }
+    return result;
   }
 
-  async sendCode(traderId: number, type: VerificationType): Promise<ApiResponse<SendCodeResponse>> {
-    return this.request<SendCodeResponse>('POST', '/auth/send-code', { body: { trader_id: traderId, type } });
-  }
-
-  async verifyCode(traderId: number, code: string, type: VerificationType): Promise<ApiResponse<VerifyCodeResponse>> {
-    return this.request<VerifyCodeResponse>('POST', '/auth/verify-code', { body: { trader_id: traderId, code, type } });
+  async sendCode(options: {
+    tell?: string;
+    chat_id?: string;
+    type?: VerificationType;
+  }): Promise<ApiResponse<SendCodeResponse>> {
+    const body: Record<string, string> = {};
+    if (options.tell) body.tell = options.tell;
+    if (options.chat_id) body.chat_id = options.chat_id;
+    if (options.type) body.type = options.type;
+    return this.request<SendCodeResponse>('POST', '/auth/send-code', { body });
   }
 
   async setPassword(traderId: number, password: string, code: string): Promise<ApiResponse<void>> {
-    return this.request<void>('POST', '/auth/set-password', { body: { trader_id: traderId, password, code } });
+    return this.request<void>('POST', '/auth/set-password', {
+      body: { trader_id: traderId, password, code },
+    });
   }
 
   async requestChangePassword(newPassword: string): Promise<ApiResponse<void>> {
-    return this.request<void>('POST', '/auth/change-password/request', { body: { new_password: newPassword }, auth: true });
+    return this.request<void>('POST', '/auth/change-password/request', {
+      body: { new_password: newPassword },
+      auth: true,
+    });
   }
 
   async changePassword(newPassword: string, code: string): Promise<ApiResponse<void>> {
-    return this.request<void>('POST', '/auth/change-password', { body: { new_password: newPassword, code }, auth: true });
+    return this.request<void>('POST', '/auth/change-password', {
+      body: { new_password: newPassword, code },
+      auth: true,
+    });
+  }
+
+  async logout(): Promise<ApiResponse<LogoutResponse>> {
+    const result = await this.request<LogoutResponse>('POST', '/auth/logout', { auth: true });
+    this.stopProfileRefresh();
+    this.token = null;
+    this.trader = null;
+    this.cachedProfile = null;
+    this._clearStorage();
+    this.emit('logout', undefined);
+    this.emit('authChange', this.getAuthState());
+    return result;
+  }
+
+  async listDevices(): Promise<ApiResponse<DeviceListResponse>> {
+    return this.request<DeviceListResponse>('GET', '/auth/devices', { auth: true });
+  }
+
+  async deleteDevice(deviceId: string): Promise<ApiResponse<void>> {
+    return this.request<void>('POST', '/auth/devices/delete', {
+      body: { device_id: deviceId },
+      auth: true,
+    });
+  }
+
+  async deleteOtherDevices(): Promise<ApiResponse<void>> {
+    return this.request<void>('POST', '/auth/devices/delete-others', { auth: true });
   }
 
   // --- Profile Methods ---
@@ -512,12 +834,12 @@ export class MoamelatClient {
   }
 
   async getOpenTrades(): Promise<ApiResponse<OpenTradesResponse>> {
-    return this.request<OpenTradesResponse>('GET', '/trader/open-trades', { auth: true });
+    return this.request<OpenTradesResponse>('GET', '/order/open-trades', { auth: true });
   }
 
   async getCapacity(rate?: number): Promise<ApiResponse<CapacityResponse>> {
     const query = rate !== undefined ? `?rate=${rate}` : '';
-    return this.request<CapacityResponse>('GET', `/trader/capacity${query}`, { auth: true });
+    return this.request<CapacityResponse>('GET', `/order/capacity${query}`, { auth: true });
   }
 
   async getReferral(): Promise<ApiResponse<ReferralResponse>> {
@@ -525,42 +847,69 @@ export class MoamelatClient {
   }
 
   async editNickname(nickname: string): Promise<ApiResponse<void>> {
-    return this.request<void>('POST', '/trader/edit-nickname', { body: { nickname }, auth: true });
+    return this.request<void>('POST', '/trader/edit-nickname', {
+      body: { nickname },
+      auth: true,
+    });
   }
 
   // --- Trading Methods ---
 
   async openTrade(type: TradeType, amount: number): Promise<ApiResponse<OpenTradeResponse>> {
-    return this.request<OpenTradeResponse>('POST', '/trader/trade', { body: { type, amount }, auth: true });
+    return this.request<OpenTradeResponse>('POST', '/order/trade', {
+      body: { type, amount },
+      auth: true,
+    });
   }
 
   async closeTrade(tradeId: number): Promise<ApiResponse<CloseTradeResponse>> {
-    return this.request<CloseTradeResponse>('POST', '/trader/close', { body: { trade_id: tradeId }, auth: true });
+    return this.request<CloseTradeResponse>('POST', '/order/close', {
+      body: { id: tradeId },
+      auth: true,
+    });
   }
 
   async closeAllTrades(type: CloseType): Promise<ApiResponse<CloseAllTradesResponse>> {
-    return this.request<CloseAllTradesResponse>('POST', '/trader/close-all', { body: { type }, auth: true });
+    return this.request<CloseAllTradesResponse>('POST', '/order/closeAll', {
+      body: { type },
+      auth: true,
+    });
   }
 
   async changeLeverage(leverage: number): Promise<ApiResponse<LeverageResponse>> {
-    return this.request<LeverageResponse>('POST', '/trader/leverage', { body: { leverage }, auth: true });
+    return this.request<LeverageResponse>('POST', '/trader/changeLeverage', {
+      body: { leverage },
+      auth: true,
+    });
   }
 
-  // --- TP/SL Methods ---
+  // --- TP/SL & Limit Orders ---
 
   async updateTPSL(tradeId: number, tp?: number, sl?: number): Promise<ApiResponse<TpslResponse>> {
-    return this.request<TpslResponse>('POST', '/trader/tpsl', { body: { trade_id: tradeId, tp: tp ?? 0, sl: sl ?? 0 }, auth: true });
+    return this.request<TpslResponse>('POST', '/order/setTpSl', {
+      body: { id: tradeId, tp: tp ?? 0, sl: sl ?? 0 },
+      auth: true,
+    });
   }
 
-  async getPendingOrders(status?: PendingStatus | PendingStatus[]): Promise<ApiResponse<PendingOrdersResponse>> {
-    const statusQuery = status
-      ? `?status=${Array.isArray(status) ? status.join(',') : status}`
-      : '';
-    return this.request<PendingOrdersResponse>('GET', `/trader/pending${statusQuery}`, { auth: true });
+  async createLimitOrder(
+    type: TradeType,
+    amount: number,
+    price: number,
+    tp?: number,
+    sl?: number,
+  ): Promise<ApiResponse<CreateLimitOrderResponse>> {
+    const body: Record<string, unknown> = { type, amount, price };
+    if (tp !== undefined) body.tp = tp;
+    if (sl !== undefined) body.sl = sl;
+    return this.request<CreateLimitOrderResponse>('POST', '/order/pending', { body, auth: true });
   }
 
   async cancelPendingOrder(pendingId: number): Promise<ApiResponse<CancelPendingResponse>> {
-    return this.request<CancelPendingResponse>('POST', '/trader/pending/cancel', { body: { pending_id: pendingId }, auth: true });
+    return this.request<CancelPendingResponse>('POST', '/order/deleteOrder', {
+      body: { id: pendingId },
+      auth: true,
+    });
   }
 
   // --- History Methods ---
@@ -573,13 +922,23 @@ export class MoamelatClient {
     if (filters?.from_date) params.set('from_date', String(filters.from_date));
     if (filters?.to_date) params.set('to_date', String(filters.to_date));
     const query = params.toString();
-    return this.request<TradeHistoryResponse>('GET', `/trader/history${query ? `?${query}` : ''}`, { auth: true });
+    return this.request<TradeHistoryResponse>(
+      'GET',
+      `/order/history${query ? `?${query}` : ''}`,
+      { auth: true },
+    );
+  }
+
+  async getTradingData(): Promise<ApiResponse<OrderLoadResponse>> {
+    return this.request<OrderLoadResponse>('GET', '/order/load', { auth: true });
   }
 
   // --- Accounting Methods ---
 
   async getServicesStatus(): Promise<ApiResponse<ServicesStatusResponse>> {
-    return this.request<ServicesStatusResponse>('GET', '/accounting/services-status', { auth: true });
+    return this.request<ServicesStatusResponse>('GET', '/accounting/services-status', {
+      auth: true,
+    });
   }
 
   async getMargin(): Promise<ApiResponse<MarginResponse>> {
@@ -588,43 +947,73 @@ export class MoamelatClient {
 
   async getTransactions(page = 1, type?: string): Promise<ApiResponse<TransactionsResponse>> {
     const query = type ? `&type=${type}` : '';
-    return this.request<TransactionsResponse>('GET', `/accounting/transactions?page=${page}${query}`, { auth: true });
+    return this.request<TransactionsResponse>(
+      'GET',
+      `/accounting/transactions?page=${page}${query}`,
+      { auth: true },
+    );
   }
 
   async getDepositConstraints(): Promise<ApiResponse<DepositConstraintsResponse>> {
-    return this.request<DepositConstraintsResponse>('GET', '/accounting/deposit/constraints', { auth: true });
+    return this.request<DepositConstraintsResponse>('GET', '/accounting/deposit/constraints', {
+      auth: true,
+    });
   }
 
-  async getWithdrawConstraints(cardNumber?: string, withdrawType: WithdrawType = 'irt'): Promise<ApiResponse<WithdrawConstraintsResponse>> {
+  async getWithdrawConstraints(
+    cardNumber?: string,
+    withdrawType: 'irt' | 'usdt' = 'irt',
+  ): Promise<ApiResponse<WithdrawConstraintsResponse>> {
     const params = new URLSearchParams();
     if (cardNumber) params.set('cardnumber', cardNumber);
     params.set('withdrawType', withdrawType);
     const query = params.toString();
-    return this.request<WithdrawConstraintsResponse>('GET', `/accounting/withdraw/constraints${query ? `?${query}` : ''}`, { auth: true });
+    return this.request<WithdrawConstraintsResponse>(
+      'GET',
+      `/accounting/withdraw/constraints${query ? `?${query}` : ''}`,
+      { auth: true },
+    );
   }
 
   async depositIRT(amount: number, cardnumber: string): Promise<ApiResponse<IrtDepositResponse>> {
-    return this.request<IrtDepositResponse>('POST', '/accounting/deposit/irt', { body: { amount, cardnumber }, auth: true });
+    return this.request<IrtDepositResponse>('POST', '/accounting/deposit/irt', {
+      body: { amount, cardnumber },
+      auth: true,
+    });
   }
 
   async depositManual(data: ManualDepositData): Promise<ApiResponse<ManualDepositResponse>> {
-    return this.request<ManualDepositResponse>('POST', '/accounting/deposit/manual', { body: { amount: data.amount, fishNumber: data.fishNumber, image: data.image }, auth: true });
+    return this.request<ManualDepositResponse>('POST', '/accounting/deposit/manual', {
+      body: { amount: data.amount, fishNumber: data.fishNumber, image: data.image },
+      auth: true,
+    });
   }
 
   async depositUSDT(network: UsdtNetwork = 'trc20'): Promise<ApiResponse<UsdtDepositResponse>> {
-    return this.request<UsdtDepositResponse>('GET', `/accounting/deposit/usdt?network=${network}`, { auth: true });
+    return this.request<UsdtDepositResponse>(
+      'GET',
+      `/accounting/deposit/usdt?network=${network}`,
+      { auth: true },
+    );
   }
 
   async getNeodigiDepositInfo(): Promise<ApiResponse<NeodigiDepositResponse>> {
-    return this.request<NeodigiDepositResponse>('GET', '/accounting/deposit/neodigi', { auth: true });
+    return this.request<NeodigiDepositResponse>('GET', '/accounting/deposit/neodigi', {
+      auth: true,
+    });
   }
 
   async checkPendingDepositVerify(): Promise<ApiResponse<PendingVerifyResponse>> {
-    return this.request<PendingVerifyResponse>('GET', '/accounting/deposit/pending-verify', { auth: true });
+    return this.request<PendingVerifyResponse>('GET', '/accounting/deposit/pending-verify', {
+      auth: true,
+    });
   }
 
   async validateWallet(address: string, network: UsdtNetwork = 'trc20'): Promise<ApiResponse<WalletValidationResponse>> {
-    return this.request<WalletValidationResponse>('POST', '/accounting/wallet/validate', { body: { address, network }, auth: true });
+    return this.request<WalletValidationResponse>('POST', '/accounting/wallet/validate', {
+      body: { address, network },
+      auth: true,
+    });
   }
 
   async withdraw(options: {
@@ -655,15 +1044,19 @@ export class MoamelatClient {
   }
 
   async submitKycStep1(data: KycStep1Data): Promise<ApiResponse<KycResponse>> {
-    return this.requestFormData<KycResponse>('POST', '/kyc/step1', data, { auth: true });
+    return this.request<KycResponse>('POST', '/kyc/step1', { body: data, auth: true });
   }
 
   async submitKycStep2(data: KycStep2Data): Promise<ApiResponse<KycResponse>> {
-    return this.requestFormData<KycResponse>('POST', '/kyc/step2', data, { auth: true });
+    return this.requestFormData<KycResponse>('POST', '/kyc/step2', data as Record<string, string | File>, {
+      auth: true,
+    });
   }
 
   async submitKycStep3(data: KycStep3Data): Promise<ApiResponse<KycResponse>> {
-    return this.requestFormData<KycResponse>('POST', '/kyc/step3', data, { auth: true });
+    return this.requestFormData<KycResponse>('POST', '/kyc/step3', data as Record<string, string | File>, {
+      auth: true,
+    });
   }
 
   // --- Card Methods ---
@@ -672,15 +1065,36 @@ export class MoamelatClient {
     return this.request<CardListResponse>('GET', '/card/list', { auth: true });
   }
 
-  async addCard(data: AddCardData): Promise<ApiResponse<AddCardResponse>> {
-    return this.request<AddCardResponse>('POST', '/card/add', { body: data, auth: true });
+  async addCard(cardnumber: string): Promise<ApiResponse<AddCardResponse>> {
+    return this.request<AddCardResponse>('POST', '/card/add', { body: { cardnumber }, auth: true });
   }
 
   async deleteCard(cardId: number): Promise<ApiResponse<DeleteCardResponse>> {
-    return this.request<DeleteCardResponse>('POST', '/card/delete', { body: { card_id: cardId }, auth: true });
+    return this.request<DeleteCardResponse>('POST', '/card/delete', {
+      body: { id: cardId },
+      auth: true,
+    });
   }
 
   // --- Internal Request Methods ---
+
+  private _extractErrorMessage(data: any): string {
+    if (data && typeof data.errors === 'object' && data.errors !== null) {
+      for (const value of Object.values(data.errors)) {
+        if (typeof value === 'string') return value;
+        if (value && typeof (value as any).msg === 'string') return (value as any).msg;
+      }
+    }
+    if (typeof data?.message === 'string') return data.message;
+    if (typeof data?.error === 'string') return data.error;
+    return 'Request failed';
+  }
+
+  private _extractErrorCode(data: any): string | undefined {
+    if (typeof data?.message === 'string') return data.message;
+    if (typeof data?.error === 'string') return data.error;
+    return undefined;
+  }
 
   private async request<T>(
     method: string,
@@ -708,10 +1122,11 @@ export class MoamelatClient {
           body: body ? JSON.stringify(body) : undefined,
         });
 
-        const data = await response.json() as ApiResponse<T>;
+        const data = (await response.json()) as ApiResponse<T>;
 
         if (!response.ok) {
-          const errorCode = typeof data.message === 'string' ? data.message : undefined;
+          const errorMessage = this._extractErrorMessage(data) || response.statusText;
+          const errorCode = this._extractErrorCode(data);
 
           if (RETRYABLE_CODES.includes(errorCode ?? '') && attempt < this.maxRetries) {
             const delay = this.retryDelayMs * Math.pow(2, attempt);
@@ -721,18 +1136,17 @@ export class MoamelatClient {
             continue;
           }
 
-          throw new ApiError(
-            data.message ?? response.statusText,
-            response.status,
-            response.statusText,
-            errorCode,
-            data,
-          );
+          throw new ApiError(errorMessage, response.status, response.statusText, errorCode, data);
         }
 
         return data;
       } catch (error) {
         if (error instanceof ApiError) {
+          if (auth && this._isInvalidTokenError(error)) {
+            this.clearToken();
+            this.emit('invalidToken', error);
+            this.emit('authChange', this.getAuthState());
+          }
           throw error;
         }
 
@@ -776,23 +1190,31 @@ export class MoamelatClient {
       body: formData,
     });
 
-    const responseData = await response.json() as ApiResponse<T>;
+    const responseData = (await response.json()) as ApiResponse<T>;
 
     if (!response.ok) {
-      const errorCode = typeof responseData.message === 'string' ? responseData.message : undefined;
-      throw new ApiError(
-        responseData.message ?? response.statusText,
-        response.status,
-        response.statusText,
-        errorCode,
-        responseData,
-      );
+      const errorMessage = this._extractErrorMessage(responseData) || response.statusText;
+      const errorCode = this._extractErrorCode(responseData);
+      const error = new ApiError(errorMessage, response.status, response.statusText, errorCode, responseData);
+      if (auth && this._isInvalidTokenError(error)) {
+        this.clearToken();
+        this.emit('invalidToken', error);
+        this.emit('authChange', this.getAuthState());
+      }
+      throw error;
     }
 
     return responseData;
   }
 
+  private _isInvalidTokenError(error: ApiError): boolean {
+    return (
+      error.status === 401 ||
+      (error.code != null && error.code.toUpperCase().includes('TOKEN'))
+    );
+  }
+
   private sleep(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { MoamelatClient, ApiError } from "./client";
+import { MoamelatClient, ApiError, createMemoryStorageAdapter } from "./client";
 
 // Helper to create mocked fetch response
 function createMockResponse(data: unknown, status = 200, ok = true) {
@@ -21,6 +21,8 @@ describe("MoamelatClient", () => {
     client = new MoamelatClient({
       baseUrl: "https://api.test.com",
       maxRetries: 0, // Disable retries for most tests to keep them fast
+      persistAuth: false,
+      autoRefreshProfile: false,
     });
     fetchMock = mock(createMockResponse);
     globalThis.fetch = fetchMock;
@@ -67,30 +69,6 @@ describe("MoamelatClient", () => {
   // ==================== Auth Methods ====================
 
   describe("auth methods", () => {
-    it("getTrader should send GET request with identifier", async () => {
-      const mockData = {
-        success: true,
-        data: {
-          trader: {
-            id: 123,
-            chat_id: "987654321",
-            tell: "09123456789",
-            fullname: "John Doe",
-            has_password: true,
-          },
-        },
-      };
-      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
-
-      const result = await client.getTrader("09123456789");
-
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/auth/trader?identifier=09123456789");
-      expect(options.method).toBe("GET");
-      expect(result).toEqual(mockData);
-    });
-
     it("loginByIdentifier should send POST request with body", async () => {
       const mockData = {
         success: true,
@@ -110,13 +88,13 @@ describe("MoamelatClient", () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/auth/login/password");
+      expect(url).toBe("https://api.test.com/auth/login");
       expect(options.method).toBe("POST");
       expect(JSON.parse(options.body)).toEqual({ id: "09123456789", password: "pass123" });
       expect(result).toEqual(mockData);
     });
 
-    it("loginByUsername should send POST request with body", async () => {
+    it("loginByUsername should send POST request with body mapped to id", async () => {
       const mockData = {
         success: true,
         data: {
@@ -130,35 +108,33 @@ describe("MoamelatClient", () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/auth/login/username");
-      expect(JSON.parse(options.body)).toEqual({ username: "john", password: "pass123" });
+      expect(url).toBe("https://api.test.com/auth/login");
+      expect(JSON.parse(options.body)).toEqual({ id: "john", password: "pass123" });
       expect(result).toEqual(mockData);
     });
 
-    it("sendCode should send POST request", async () => {
+    it("sendCode should send POST request with tell", async () => {
       const mockData = { success: true, data: { mobile: "0912***6789", trader_id: 123 } };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      const result = await client.sendCode(123, "set_password");
+      const result = await client.sendCode({ tell: "09123456789", type: "set_password" });
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [url, options] = fetchMock.mock.calls[0]!;
       expect(url).toBe("https://api.test.com/auth/send-code");
-      expect(JSON.parse(options.body)).toEqual({ trader_id: 123, type: "set_password" });
+      expect(JSON.parse(options.body)).toEqual({ tell: "09123456789", type: "set_password" });
       expect(result).toEqual(mockData);
     });
 
-    it("verifyCode should send POST request", async () => {
-      const mockData = { success: true, data: { success: true } };
+    it("sendCode should send POST request with chat_id", async () => {
+      const mockData = { success: true, data: {} };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      const result = await client.verifyCode(123, "12345", "set_password");
+      await client.sendCode({ chat_id: "987654321" });
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/auth/verify-code");
-      expect(JSON.parse(options.body)).toEqual({ trader_id: 123, code: "12345", type: "set_password" });
-      expect(result).toEqual(mockData);
+      expect(JSON.parse(options.body)).toEqual({ chat_id: "987654321" });
     });
 
     it("setPassword should send POST request", async () => {
@@ -198,6 +174,81 @@ describe("MoamelatClient", () => {
       expect(url).toBe("https://api.test.com/auth/change-password");
       expect(options.headers["x-token"]).toBe("123:abc");
       expect(JSON.parse(options.body)).toEqual({ new_password: "newpass", code: "54321" });
+    });
+
+    it("logout should send POST request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = { success: true, data: { message: "خروج با موفقیت انجام شد" } };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      const result = await client.logout();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/auth/logout");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(options.method).toBe("POST");
+      expect(result).toEqual(mockData);
+    });
+
+    it("listDevices should send GET request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: {
+          devices: [
+            {
+              id: 1,
+              device_id: "550e8400-e29b-41d4-a716-446655440000",
+              device_name: "iPhone 14",
+              device_type: "ios",
+              user_agent: "Mozilla/5.0",
+              ip_address: "192.168.1.1",
+              last_activity: 1712345678,
+              created_at: 1712345678,
+              is_active: 1,
+            },
+          ],
+        },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      const result = await client.listDevices();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/auth/devices");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(options.method).toBe("GET");
+      expect(result).toEqual(mockData);
+    });
+
+    it("deleteDevice should send POST request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = { success: true, data: undefined };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.deleteDevice("550e8400-e29b-41d4-a716-446655440000");
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/auth/devices/delete");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(JSON.parse(options.body)).toEqual({ device_id: "550e8400-e29b-41d4-a716-446655440000" });
+    });
+
+    it("deleteOtherDevices should send POST request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = { success: true, data: undefined };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      await client.deleteOtherDevices();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/auth/devices/delete-others");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(options.method).toBe("POST");
     });
   });
 
@@ -259,7 +310,7 @@ describe("MoamelatClient", () => {
       const result = await client.getOpenTrades();
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/open-trades");
+      expect(url).toBe("https://api.test.com/order/open-trades");
       expect(options.headers["x-token"]).toBe("123:abc");
       expect(result).toEqual(mockData);
     });
@@ -275,7 +326,7 @@ describe("MoamelatClient", () => {
       await client.getCapacity();
 
       const [url] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/capacity");
+      expect(url).toBe("https://api.test.com/order/capacity");
     });
 
     it("getCapacity with rate should include query param", async () => {
@@ -289,7 +340,7 @@ describe("MoamelatClient", () => {
       await client.getCapacity(1875.0);
 
       const [url] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/capacity?rate=1875");
+      expect(url).toBe("https://api.test.com/order/capacity?rate=1875");
     });
 
     it("getReferral should send GET request with auth", async () => {
@@ -338,7 +389,7 @@ describe("MoamelatClient", () => {
       const result = await client.openTrade("buy", 5);
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/trade");
+      expect(url).toBe("https://api.test.com/order/trade");
       expect(options.headers["x-token"]).toBe("123:abc");
       expect(JSON.parse(options.body)).toEqual({ type: "buy", amount: 5 });
       expect(result).toEqual(mockData);
@@ -352,9 +403,9 @@ describe("MoamelatClient", () => {
       await client.closeTrade(456);
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/close");
+      expect(url).toBe("https://api.test.com/order/close");
       expect(options.headers["x-token"]).toBe("123:abc");
-      expect(JSON.parse(options.body)).toEqual({ trade_id: 456 });
+      expect(JSON.parse(options.body)).toEqual({ id: 456 });
     });
 
     it("closeAllTrades should send POST request with auth", async () => {
@@ -365,7 +416,7 @@ describe("MoamelatClient", () => {
       await client.closeAllTrades("all");
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/close-all");
+      expect(url).toBe("https://api.test.com/order/closeAll");
       expect(JSON.parse(options.body)).toEqual({ type: "all" });
     });
 
@@ -380,7 +431,7 @@ describe("MoamelatClient", () => {
       await client.changeLeverage(3);
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/leverage");
+      expect(url).toBe("https://api.test.com/trader/changeLeverage");
       expect(JSON.parse(options.body)).toEqual({ leverage: 3 });
     });
   });
@@ -396,8 +447,8 @@ describe("MoamelatClient", () => {
       await client.updateTPSL(456, 1900, 1800);
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/tpsl");
-      expect(JSON.parse(options.body)).toEqual({ trade_id: 456, tp: 1900, sl: 1800 });
+      expect(url).toBe("https://api.test.com/order/setTpSl");
+      expect(JSON.parse(options.body)).toEqual({ id: 456, tp: 1900, sl: 1800 });
     });
 
     it("updateTPSL should default tp and sl to 0 when undefined", async () => {
@@ -408,59 +459,32 @@ describe("MoamelatClient", () => {
       await client.updateTPSL(456);
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(JSON.parse(options.body)).toEqual({ trade_id: 456, tp: 0, sl: 0 });
+      expect(JSON.parse(options.body)).toEqual({ id: 456, tp: 0, sl: 0 });
     });
 
-    it("getPendingOrders without status should send GET request", async () => {
+    it("createLimitOrder should send POST request with auth", async () => {
       client.setToken("123:abc");
-      const mockData = {
-        success: true,
-        data: {
-          orders: [
-            {
-              id: 789,
-              trade_id: 456,
-              type: "buy" as const,
-              order_type: "tpsl" as const,
-              number: 5,
-              price: 1850.0,
-              base_price: 1875.0,
-              tp: 1900.0,
-              sl: 1800.0,
-              status: "step1" as const,
-              date: 1712345678,
-            },
-          ],
-        },
-      };
+      const mockData = { success: true, data: { id: 789 } };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      await client.getPendingOrders();
+      const result = await client.createLimitOrder("buy", 5, 1850, 1900, 1800);
 
-      const [url] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/pending");
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/order/pending");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(JSON.parse(options.body)).toEqual({ type: "buy", amount: 5, price: 1850, tp: 1900, sl: 1800 });
+      expect(result).toEqual(mockData);
     });
 
-    it("getPendingOrders with single status should include query param", async () => {
+    it("createLimitOrder should omit optional tp and sl when undefined", async () => {
       client.setToken("123:abc");
-      const mockData = { success: true, data: { orders: [] } };
+      const mockData = { success: true, data: { id: 789 } };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      await client.getPendingOrders("new");
+      await client.createLimitOrder("sell", 3, 1860);
 
-      const [url] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/pending?status=new");
-    });
-
-    it("getPendingOrders with multiple statuses should include comma-separated query", async () => {
-      client.setToken("123:abc");
-      const mockData = { success: true, data: { orders: [] } };
-      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
-
-      await client.getPendingOrders(["new", "step1"]);
-
-      const [url] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/pending?status=new,step1");
+      const [, options] = fetchMock.mock.calls[0]!;
+      expect(JSON.parse(options.body)).toEqual({ type: "sell", amount: 3, price: 1860 });
     });
 
     it("cancelPendingOrder should send POST request with auth", async () => {
@@ -471,8 +495,8 @@ describe("MoamelatClient", () => {
       await client.cancelPendingOrder(789);
 
       const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/pending/cancel");
-      expect(JSON.parse(options.body)).toEqual({ pending_id: 789 });
+      expect(url).toBe("https://api.test.com/order/deleteOrder");
+      expect(JSON.parse(options.body)).toEqual({ id: 789 });
     });
   });
 
@@ -490,7 +514,7 @@ describe("MoamelatClient", () => {
       await client.getHistory();
 
       const [url] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/trader/history");
+      expect(url).toBe("https://api.test.com/order/history");
     });
 
     it("getHistory with filters should include query params", async () => {
@@ -504,12 +528,38 @@ describe("MoamelatClient", () => {
       await client.getHistory({ page: 2, limit: 10, type: "buy", from_date: 1711929600, to_date: 1712016000 });
 
       const [url] = fetchMock.mock.calls[0]!;
-      expect(url).toContain("/trader/history?");
+      expect(url).toContain("/order/history?");
       expect(url).toContain("page=2");
       expect(url).toContain("limit=10");
       expect(url).toContain("type=buy");
       expect(url).toContain("from_date=1711929600");
       expect(url).toContain("to_date=1712016000");
+    });
+  });
+
+  describe("getTradingData", () => {
+    it("should send GET request with auth", async () => {
+      client.setToken("123:abc");
+      const mockData = {
+        success: true,
+        data: {
+          trader: { id: 123, tell: "09123456789", nickname: "john", margin: "1000.00", leverage: 1, open_trades: 2 },
+          trades: [{ id: 456, type: "buy", amount: 5, price: "1850.25", remain_amount: 5, time: 1712345678 }],
+          pendings: [{ id: 789, type: "buy", number: 3, price: 1840, status: "new" }],
+          wsServerUrl: "wss://test",
+          chartToken: "token123",
+          chartLink: "https://chart.test",
+        },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
+
+      const result = await client.getTradingData();
+
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://api.test.com/order/load");
+      expect(options.headers["x-token"]).toBe("123:abc");
+      expect(options.method).toBe("GET");
+      expect(result).toEqual(mockData);
     });
   });
 
@@ -859,26 +909,36 @@ describe("MoamelatClient", () => {
       expect(result).toEqual(mockData);
     });
 
-    it("submitKycStep1 should send FormData POST request", async () => {
+    it("submitKycStep1 should send JSON POST request", async () => {
       client.setToken("123:abc");
       const mockData = { success: true, data: { success: true } };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
       await client.submitKycStep1({
         fullname: "John Doe",
-        national_id: "0012345678",
-        birth_date: "1370/01/01",
+        nid: "0012345678",
+        mobile: "09123456789",
+        year: "1370",
+        month: "01",
+        day: "01",
       });
 
       const [url, options] = fetchMock.mock.calls[0]!;
       expect(url).toBe("https://api.test.com/kyc/step1");
       expect(options.method).toBe("POST");
       expect(options.headers["x-token"]).toBe("123:abc");
-      // FormData body should be present
-      expect(options.body).toBeInstanceOf(FormData);
+      expect(options.headers["Content-Type"]).toContain("application/json");
+      expect(JSON.parse(options.body)).toEqual({
+        fullname: "John Doe",
+        nid: "0012345678",
+        mobile: "09123456789",
+        year: "1370",
+        month: "01",
+        day: "01",
+      });
     });
 
-    it("submitKycStep2 should send FormData POST request", async () => {
+    it("submitKycStep2 should send FormData POST request with nidPic and commitment", async () => {
       client.setToken("123:abc");
       const mockData = { success: true, data: { success: true } };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
@@ -886,8 +946,8 @@ describe("MoamelatClient", () => {
       const mockFile = new File(["test"], "card.png", { type: "image/png" });
 
       await client.submitKycStep2({
-        id_card_front: mockFile,
-        id_card_back: mockFile,
+        nidPic: mockFile,
+        commitment: mockFile,
       });
 
       const [url, options] = fetchMock.mock.calls[0]!;
@@ -895,14 +955,14 @@ describe("MoamelatClient", () => {
       expect(options.body).toBeInstanceOf(FormData);
     });
 
-    it("submitKycStep3 should send FormData POST request", async () => {
+    it("submitKycStep3 should send FormData POST request with commitmentSelfi", async () => {
       client.setToken("123:abc");
       const mockData = { success: true, data: { success: true } };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
       const mockFile = new File(["test"], "selfie.png", { type: "image/png" });
 
-      await client.submitKycStep3({ selfie: mockFile });
+      await client.submitKycStep3({ commitmentSelfi: mockFile });
 
       const [url, options] = fetchMock.mock.calls[0]!;
       expect(url).toBe("https://api.test.com/kyc/step3");
@@ -921,10 +981,10 @@ describe("MoamelatClient", () => {
 
       const mockFile = new File(["test"], "selfie.png", { type: "image/png" });
 
-      await expect(client.submitKycStep3({ selfie: mockFile })).rejects.toThrow(ApiError);
+      await expect(client.submitKycStep3({ commitmentSelfi: mockFile })).rejects.toThrow(ApiError);
 
       try {
-        await client.submitKycStep3({ selfie: mockFile });
+        await client.submitKycStep3({ commitmentSelfi: mockFile });
       } catch (error) {
         expect(error).toBeInstanceOf(ApiError);
         expect((error as ApiError).status).toBe(400);
@@ -967,19 +1027,11 @@ describe("MoamelatClient", () => {
       };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      await client.addCard({
-        bank: "Mellat",
-        number: "6037991234567890",
-        shaba: "IR123456789012345678901234",
-      });
+      await client.addCard("6037991234567890");
 
       const [url, options] = fetchMock.mock.calls[0]!;
       expect(url).toBe("https://api.test.com/card/add");
-      expect(JSON.parse(options.body)).toEqual({
-        bank: "Mellat",
-        number: "6037991234567890",
-        shaba: "IR123456789012345678901234",
-      });
+      expect(JSON.parse(options.body)).toEqual({ cardnumber: "6037991234567890" });
     });
 
     it("deleteCard should send POST request with auth", async () => {
@@ -991,7 +1043,7 @@ describe("MoamelatClient", () => {
 
       const [url, options] = fetchMock.mock.calls[0]!;
       expect(url).toBe("https://api.test.com/card/delete");
-      expect(JSON.parse(options.body)).toEqual({ card_id: 1 });
+      expect(JSON.parse(options.body)).toEqual({ id: 1 });
     });
   });
 
@@ -1033,6 +1085,29 @@ describe("MoamelatClient", () => {
       } catch (error) {
         expect(error).toBeInstanceOf(ApiError);
         expect((error as ApiError).response).toEqual(errorResponse);
+      }
+    });
+
+    it("should use nested errors msg as message when available", async () => {
+      const errorResponse = {
+        success: false,
+        message: "Bad request",
+        data: {},
+        errors: {
+          general: {
+            msg: "کاربر یافت نشد",
+          },
+        },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(errorResponse, 401, false));
+
+      try {
+        await client.loginByIdentifier("baduser", "badpass");
+      } catch (error) {
+        expect(error).toBeInstanceOf(ApiError);
+        expect((error as ApiError).status).toBe(401);
+        expect((error as ApiError).message).toBe("کاربر یافت نشد");
+        expect((error as ApiError).code).toBe("Bad request");
       }
     });
   });
@@ -1163,18 +1238,13 @@ describe("MoamelatClient", () => {
       const mockData = {
         success: true,
         data: {
-          trader: {
-            id: 123,
-            chat_id: "987654321",
-            tell: "09123456789",
-            fullname: "John Doe",
-            has_password: true,
-          },
+          token: "123:abc",
+          trader: { id: 123, tell: "09123456789", fullname: "John", nickname: "john" },
         },
       };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      await client.getTrader("09123456789");
+      await client.loginByIdentifier("09123456789", "pass123");
 
       const [, options] = fetchMock.mock.calls[0]!;
       expect(options.headers["x-token"]).toBeUndefined();
@@ -1198,6 +1268,364 @@ describe("MoamelatClient", () => {
 
       const [, options] = fetchMock.mock.calls[0]!;
       expect(options.headers["x-token"]).toBeUndefined();
+    });
+  });
+
+  // ==================== Persistence ====================
+
+  describe("persistence", () => {
+    it("should restore token and trader from storage on init", () => {
+      const storage = createMemoryStorageAdapter();
+      storage.setItem(
+        "moamelat:auth",
+        JSON.stringify({ token: "stored:token", trader: { id: 99, tell: "0912", fullname: "Ali", nickname: "ali" } })
+      );
+      storage.setItem(
+        "moamelat:profile",
+        JSON.stringify({ id: 99, tell: "0912", nickname: "ali", fullname: "Ali", margin: 100, leverage: 1, commission: 0, obligation_status: "none", deposit_type: "irt", unique_code: "1", sell_count: 0, buy_count: 0, sell_avg: 0, buy_avg: 0, call_margin_price: { sell: 0, buy: 0 } })
+      );
+
+      const persistedClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: true,
+        autoRefreshProfile: false,
+        storage,
+      });
+
+      expect(persistedClient.getToken()).toBe("stored:token");
+      expect(persistedClient.getTrader()).toEqual({ id: 99, tell: "0912", fullname: "Ali", nickname: "ali" });
+      expect(persistedClient.getCachedProfile()?.id).toBe(99);
+    });
+
+    it("should persist auth after login", async () => {
+      const storage = createMemoryStorageAdapter();
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: true,
+        autoRefreshProfile: false,
+        storage,
+      });
+
+      const loginData = {
+        success: true,
+        data: {
+          token: "persisted:token",
+          trader: { id: 77, tell: "0935", fullname: "Sara", nickname: "sara" },
+        },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(loginData));
+
+      await testClient.loginByIdentifier("0935", "pass");
+
+      const stored = JSON.parse(storage.getItem("moamelat:auth")!);
+      expect(stored.token).toBe("persisted:token");
+      expect(stored.trader.nickname).toBe("sara");
+    });
+
+    it("should clear storage on logout", async () => {
+      const storage = createMemoryStorageAdapter();
+      storage.setItem("moamelat:auth", JSON.stringify({ token: "t", trader: {} }));
+      storage.setItem("moamelat:profile", JSON.stringify({ id: 1 }));
+
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: true,
+        autoRefreshProfile: false,
+        storage,
+      });
+      fetchMock.mockReturnValueOnce(createMockResponse({ success: true, data: { message: "ok" } }));
+
+      await testClient.logout();
+
+      expect(storage.getItem("moamelat:auth")).toBeNull();
+      expect(storage.getItem("moamelat:profile")).toBeNull();
+    });
+
+    it("should not use storage when persistAuth is false", () => {
+      const storage = createMemoryStorageAdapter();
+      storage.setItem("moamelat:auth", JSON.stringify({ token: "t" }));
+
+      const noPersistClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: false,
+        storage,
+      });
+
+      expect(noPersistClient.getToken()).toBeNull();
+    });
+  });
+
+  // ==================== Events ====================
+
+  describe("events", () => {
+    it("should emit login and authChange on successful login", async () => {
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: false,
+        autoRefreshProfile: false,
+      });
+      const loginData = {
+        success: true,
+        data: {
+          token: "evt:token",
+          trader: { id: 1, tell: "0911", fullname: "A", nickname: "a" },
+        },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(loginData));
+
+      let loginPayload: any;
+      let authChangePayload: any;
+      testClient.on("login", (p) => { loginPayload = p; });
+      testClient.on("authChange", (p) => { authChangePayload = p; });
+
+      await testClient.loginByIdentifier("0911", "pass");
+
+      expect(loginPayload?.token).toBe("evt:token");
+      expect(authChangePayload?.token).toBe("evt:token");
+      expect(authChangePayload?.trader?.nickname).toBe("a");
+    });
+
+    it("should emit logout and authChange on logout", async () => {
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: false,
+        autoRefreshProfile: false,
+      });
+      testClient.setToken("tok");
+      fetchMock.mockReturnValueOnce(createMockResponse({ success: true, data: { message: "ok" } }));
+
+      let logoutFired = false;
+      let authChangePayload: any;
+      testClient.on("logout", () => { logoutFired = true; });
+      testClient.on("authChange", (p) => { authChangePayload = p; });
+
+      await testClient.logout();
+
+      expect(logoutFired).toBe(true);
+      expect(authChangePayload?.token).toBeNull();
+    });
+
+    it("should allow unsubscribing via returned function", async () => {
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: false,
+        autoRefreshProfile: false,
+      });
+      let count = 0;
+      const unsub = testClient.on("login", () => { count++; });
+      unsub();
+
+      const loginData = {
+        success: true,
+        data: { token: "t", trader: { id: 1, tell: "09", fullname: "X", nickname: "x" } },
+      };
+      fetchMock.mockReturnValueOnce(createMockResponse(loginData));
+      await testClient.loginByIdentifier("09", "pass");
+
+      expect(count).toBe(0);
+    });
+  });
+
+  // ==================== Invalid Token Handling ====================
+
+  describe("invalid token handling", () => {
+    it("should emit invalidToken and clear auth on 401", async () => {
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: false,
+        autoRefreshProfile: false,
+        maxRetries: 0,
+      });
+      testClient.setToken("bad:token");
+
+      const errorResponse = { success: false, message: "UNAUTHORIZED", data: {} };
+      fetchMock.mockReturnValueOnce(createMockResponse(errorResponse, 401, false));
+
+      let invalidPayload: ApiError | undefined;
+      let authChangePayload: any;
+      testClient.on("invalidToken", (e) => { invalidPayload = e; });
+      testClient.on("authChange", (p) => { authChangePayload = p; });
+
+      await expect(testClient.getMargin()).rejects.toThrow(ApiError);
+
+      expect(testClient.getToken()).toBeNull();
+      expect(invalidPayload?.status).toBe(401);
+      expect(authChangePayload?.token).toBeNull();
+    });
+
+    it("should NOT emit invalidToken or clear auth on 403", async () => {
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: false,
+        autoRefreshProfile: false,
+        maxRetries: 0,
+      });
+      testClient.setToken("bad:token");
+
+      const errorResponse = { success: false, message: "FORBIDDEN", data: {} };
+      fetchMock.mockReturnValueOnce(createMockResponse(errorResponse, 403, false));
+
+      let fired = false;
+      testClient.on("invalidToken", () => { fired = true; });
+
+      await expect(testClient.getMargin()).rejects.toThrow(ApiError);
+      expect(fired).toBe(false);
+      expect(testClient.getToken()).toBe("bad:token");
+    });
+
+    it("should emit invalidToken when error code contains TOKEN", async () => {
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: false,
+        autoRefreshProfile: false,
+        maxRetries: 0,
+      });
+      testClient.setToken("bad:token");
+
+      const errorResponse = { success: false, message: "INVALID_TOKEN", data: {} };
+      fetchMock.mockReturnValueOnce(createMockResponse(errorResponse, 400, false));
+
+      let fired = false;
+      testClient.on("invalidToken", () => { fired = true; });
+
+      await expect(testClient.getMargin()).rejects.toThrow(ApiError);
+      expect(fired).toBe(true);
+    });
+  });
+
+  // ==================== Profile Refresh Timer ====================
+
+  describe("profile refresh timer", () => {
+    it("should auto-fetch profile after login and emit profileChange when data differs", async () => {
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: false,
+        autoRefreshProfile: true,
+        profileRefreshIntervalMs: 50,
+      });
+
+      const loginData = {
+        success: true,
+        data: {
+          token: "timer:token",
+          trader: { id: 10, tell: "0910", fullname: "Timer", nickname: "timer" },
+        },
+      };
+
+      const profileV1 = {
+        success: true,
+        data: {
+          id: 10,
+          tell: "0910",
+          nickname: "timer",
+          fullname: "Timer",
+          margin: 100,
+          leverage: 1,
+          commission: 0,
+          obligation_status: "none",
+          deposit_type: "irt",
+          unique_code: "1",
+          sell_count: 0,
+          buy_count: 0,
+          sell_avg: 0,
+          buy_avg: 0,
+          call_margin_price: { sell: 0, buy: 0 },
+        },
+      };
+
+      const profileV2 = {
+        success: true,
+        data: {
+          id: 10,
+          tell: "0910",
+          nickname: "timer",
+          fullname: "Timer",
+          margin: 200,
+          leverage: 1,
+          commission: 0,
+          obligation_status: "none",
+          deposit_type: "irt",
+          unique_code: "1",
+          sell_count: 0,
+          buy_count: 0,
+          sell_avg: 0,
+          buy_avg: 0,
+          call_margin_price: { sell: 0, buy: 0 },
+        },
+      };
+
+      fetchMock
+        .mockReturnValueOnce(createMockResponse(loginData))
+        .mockReturnValueOnce(createMockResponse(profileV1))
+        .mockReturnValueOnce(createMockResponse(profileV2));
+
+      const changes: any[] = [];
+      testClient.on("profileChange", (p) => { changes.push(p); });
+
+      await testClient.loginByIdentifier("0910", "pass");
+      expect(testClient.getCachedProfile()?.margin).toBe(100);
+
+      await new Promise((r) => setTimeout(r, 80));
+
+      expect(changes.length).toBe(2);
+      expect(changes[0].previous).toBeNull();
+      expect(changes[0].current.margin).toBe(100);
+      expect(changes[1].previous.margin).toBe(100);
+      expect(changes[1].current.margin).toBe(200);
+      expect(testClient.getCachedProfile()?.margin).toBe(200);
+
+      // Cleanup timer so it doesn't leak into the next test
+      testClient.clearToken();
+    });
+
+    it("should stop refreshing after logout", async () => {
+      const testClient = new MoamelatClient({
+        baseUrl: "https://api.test.com",
+        persistAuth: false,
+        autoRefreshProfile: true,
+        profileRefreshIntervalMs: 50,
+      });
+
+      const loginData = {
+        success: true,
+        data: {
+          token: "timer:token",
+          trader: { id: 10, tell: "0910", fullname: "Timer", nickname: "timer" },
+        },
+      };
+
+      const profile = {
+        success: true,
+        data: {
+          id: 10,
+          tell: "0910",
+          nickname: "timer",
+          fullname: "Timer",
+          margin: 100,
+          leverage: 1,
+          commission: 0,
+          obligation_status: "none",
+          deposit_type: "irt",
+          unique_code: "1",
+          sell_count: 0,
+          buy_count: 0,
+          sell_avg: 0,
+          buy_avg: 0,
+          call_margin_price: { sell: 0, buy: 0 },
+        },
+      };
+
+      fetchMock
+        .mockReturnValueOnce(createMockResponse(loginData))
+        .mockReturnValueOnce(createMockResponse(profile))
+        .mockReturnValueOnce(createMockResponse({ success: true, data: { message: "ok" } }));
+
+      await testClient.loginByIdentifier("0910", "pass");
+      await testClient.logout();
+
+      const callCountAfterLogout = fetchMock.mock.calls.length;
+      await new Promise((r) => setTimeout(r, 100));
+      expect(fetchMock.mock.calls.length).toBe(callCountAfterLogout);
     });
   });
 });
