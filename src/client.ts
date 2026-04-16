@@ -210,12 +210,12 @@ interface HistoryFilters {
 
 // --- Accounting ---
 
-interface MarginResponse {
+export interface MarginResponse {
   margin: number;
   leverage: number;
 }
 
-interface Transaction {
+export interface Transaction {
   id: number;
   type: string;
   amount: number;
@@ -224,7 +224,7 @@ interface Transaction {
   description: string;
 }
 
-interface TransactionsResponse {
+export interface TransactionsResponse {
   transactions: Transaction[];
   total: number;
   page: number;
@@ -232,7 +232,7 @@ interface TransactionsResponse {
   totalPages: number;
 }
 
-interface DepositConstraintsResponse {
+export interface DepositConstraintsResponse {
   used: number;
   limit: number;
   remain: number;
@@ -241,7 +241,7 @@ interface DepositConstraintsResponse {
   countRemain: number;
 }
 
-interface WithdrawConstraintsResponse {
+export interface WithdrawConstraintsResponse {
   minAmount: number;
   maxAmount: number;
   fee: number;
@@ -270,7 +270,7 @@ interface ScheduleInfo {
   days: string | null;
 }
 
-interface ServicesStatusResponse {
+export interface ServicesStatusResponse {
   deposit: {
     irt: TimeStatus;
     usdt: SimpleStatus;
@@ -296,7 +296,7 @@ interface ServicesStatusResponse {
 
 // --- Accounting v2: Deposit responses ---
 
-interface IrtDepositResponse {
+export interface IrtDepositResponse {
   paymentId: number;
   link: string;
   amount: number;
@@ -305,27 +305,27 @@ interface IrtDepositResponse {
   wage: number;
 }
 
-interface UsdtDepositResponse {
+export interface UsdtDepositResponse {
   address: string;
   network: string;
 }
 
-interface NeodigiDepositResponse {
+export interface NeodigiDepositResponse {
   unique_code: string;
   fullname: string;
 }
 
-interface PendingVerifyResponse {
+export interface PendingVerifyResponse {
   hasPending: boolean;
 }
 
-interface ManualDepositResponse {
+export interface ManualDepositResponse {
   settleId: number;
   dollarRate: number;
   usdtAmount: number;
 }
 
-interface WalletValidationResponse {
+export interface WalletValidationResponse {
   valid: boolean;
   address: string;
   network: string;
@@ -351,7 +351,7 @@ interface DepositResponse {
   wage?: number;
 }
 
-interface WithdrawResponse {
+export interface WithdrawResponse {
   reference?: string;
   settleId?: number;
   margin?: number;
