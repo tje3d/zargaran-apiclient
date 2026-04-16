@@ -2,7 +2,7 @@
 
 type TradeType = 'buy' | 'sell';
 type CloseType = 'all' | 'buy' | 'sell' | 'profit' | 'loss';
-type VerificationType = 'set_password' | 'reset_password';
+
 type KycStatus = 'none' | 'pending' | 'approved' | 'rejected';
 type PendingStatus = 'new' | 'step1' | 'step2' | 'step3';
 type ObligationStatus = 'none' | string;
@@ -25,11 +25,6 @@ interface LoginResponse {
     fullname: string;
     nickname: string;
   };
-}
-
-interface SendCodeResponse {
-  mobile?: string;
-  trader_id?: number;
 }
 
 export interface Device {
@@ -728,9 +723,9 @@ export class MoamelatClient {
 
   // --- Auth Methods ---
 
-  async loginByIdentifier(id: string, password: string): Promise<ApiResponse<LoginResponse>> {
+  async login(mobile: string, password: string): Promise<ApiResponse<LoginResponse>> {
     const result = await this.request<LoginResponse>('POST', '/auth/login', {
-      body: { id, password },
+      body: { id: mobile, password },
     });
     if (result.success && result.data) {
       this.token = result.data.token;
@@ -746,44 +741,6 @@ export class MoamelatClient {
       }
     }
     return result;
-  }
-
-  async loginByUsername(username: string, password: string): Promise<ApiResponse<LoginResponse>> {
-    const result = await this.request<LoginResponse>('POST', '/auth/login', {
-      body: { id: username, password },
-    });
-    if (result.success && result.data) {
-      this.token = result.data.token;
-      this.trader = result.data.trader;
-      this._persistAuth();
-      this.emit('login', result.data);
-      this.emit('authChange', this.getAuthState());
-      if (this.autoRefreshProfile) {
-        await this._fetchAndCacheProfile().catch(() => {
-          // Ignore initial profile fetch errors
-        });
-        this.startProfileRefresh();
-      }
-    }
-    return result;
-  }
-
-  async sendCode(options: {
-    tell?: string;
-    chat_id?: string;
-    type?: VerificationType;
-  }): Promise<ApiResponse<SendCodeResponse>> {
-    const body: Record<string, string> = {};
-    if (options.tell) body.tell = options.tell;
-    if (options.chat_id) body.chat_id = options.chat_id;
-    if (options.type) body.type = options.type;
-    return this.request<SendCodeResponse>('POST', '/auth/send-code', { body });
-  }
-
-  async setPassword(traderId: number, password: string, code: string): Promise<ApiResponse<void>> {
-    return this.request<void>('POST', '/auth/set-password', {
-      body: { trader_id: traderId, password, code },
-    });
   }
 
   async requestChangePassword(newPassword: string): Promise<ApiResponse<void>> {

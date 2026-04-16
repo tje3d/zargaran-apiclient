@@ -69,7 +69,7 @@ describe("MoamelatClient", () => {
   // ==================== Auth Methods ====================
 
   describe("auth methods", () => {
-    it("loginByIdentifier should send POST request with body", async () => {
+    it("login should send POST request with body", async () => {
       const mockData = {
         success: true,
         data: {
@@ -84,69 +84,13 @@ describe("MoamelatClient", () => {
       };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      const result = await client.loginByIdentifier("09123456789", "pass123");
+      const result = await client.login("09123456789", "pass123");
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
       const [url, options] = fetchMock.mock.calls[0]!;
       expect(url).toBe("https://api.test.com/auth/login");
       expect(options.method).toBe("POST");
       expect(JSON.parse(options.body)).toEqual({ id: "09123456789", password: "pass123" });
-      expect(result).toEqual(mockData);
-    });
-
-    it("loginByUsername should send POST request with body mapped to id", async () => {
-      const mockData = {
-        success: true,
-        data: {
-          token: "123:abc123",
-          trader: { id: 123, tell: "09123456789", fullname: "John", nickname: "john" },
-        },
-      };
-      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
-
-      const result = await client.loginByUsername("john", "pass123");
-
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/auth/login");
-      expect(JSON.parse(options.body)).toEqual({ id: "john", password: "pass123" });
-      expect(result).toEqual(mockData);
-    });
-
-    it("sendCode should send POST request with tell", async () => {
-      const mockData = { success: true, data: { mobile: "0912***6789", trader_id: 123 } };
-      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
-
-      const result = await client.sendCode({ tell: "09123456789", type: "set_password" });
-
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/auth/send-code");
-      expect(JSON.parse(options.body)).toEqual({ tell: "09123456789", type: "set_password" });
-      expect(result).toEqual(mockData);
-    });
-
-    it("sendCode should send POST request with chat_id", async () => {
-      const mockData = { success: true, data: {} };
-      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
-
-      await client.sendCode({ chat_id: "987654321" });
-
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const [url, options] = fetchMock.mock.calls[0]!;
-      expect(JSON.parse(options.body)).toEqual({ chat_id: "987654321" });
-    });
-
-    it("setPassword should send POST request", async () => {
-      const mockData = { success: true, data: undefined };
-      fetchMock.mockReturnValueOnce(createMockResponse(mockData));
-
-      const result = await client.setPassword(123, "newpass", "12345");
-
-      expect(fetchMock).toHaveBeenCalledTimes(1);
-      const [url, options] = fetchMock.mock.calls[0]!;
-      expect(url).toBe("https://api.test.com/auth/set-password");
-      expect(JSON.parse(options.body)).toEqual({ trader_id: 123, password: "newpass", code: "12345" });
       expect(result).toEqual(mockData);
     });
 
@@ -1102,7 +1046,7 @@ describe("MoamelatClient", () => {
       fetchMock.mockReturnValueOnce(createMockResponse(errorResponse, 401, false));
 
       try {
-        await client.loginByIdentifier("baduser", "badpass");
+        await client.login("baduser", "badpass");
       } catch (error) {
         expect(error).toBeInstanceOf(ApiError);
         expect((error as ApiError).status).toBe(401);
@@ -1244,7 +1188,7 @@ describe("MoamelatClient", () => {
       };
       fetchMock.mockReturnValueOnce(createMockResponse(mockData));
 
-      await client.loginByIdentifier("09123456789", "pass123");
+      await client.login("09123456789", "pass123");
 
       const [, options] = fetchMock.mock.calls[0]!;
       expect(options.headers["x-token"]).toBeUndefined();
@@ -1315,7 +1259,7 @@ describe("MoamelatClient", () => {
       };
       fetchMock.mockReturnValueOnce(createMockResponse(loginData));
 
-      await testClient.loginByIdentifier("0935", "pass");
+      await testClient.login("0935", "pass");
 
       const stored = JSON.parse(storage.getItem("moamelat:auth")!);
       expect(stored.token).toBe("persisted:token");
@@ -1378,7 +1322,7 @@ describe("MoamelatClient", () => {
       testClient.on("login", (p) => { loginPayload = p; });
       testClient.on("authChange", (p) => { authChangePayload = p; });
 
-      await testClient.loginByIdentifier("0911", "pass");
+      await testClient.login("0911", "pass");
 
       expect(loginPayload?.token).toBe("evt:token");
       expect(authChangePayload?.token).toBe("evt:token");
@@ -1420,7 +1364,7 @@ describe("MoamelatClient", () => {
         data: { token: "t", trader: { id: 1, tell: "09", fullname: "X", nickname: "x" } },
       };
       fetchMock.mockReturnValueOnce(createMockResponse(loginData));
-      await testClient.loginByIdentifier("09", "pass");
+      await testClient.login("09", "pass");
 
       expect(count).toBe(0);
     });
@@ -1562,7 +1506,7 @@ describe("MoamelatClient", () => {
       const changes: any[] = [];
       testClient.on("profileChange", (p) => { changes.push(p); });
 
-      await testClient.loginByIdentifier("0910", "pass");
+      await testClient.login("0910", "pass");
       expect(testClient.getCachedProfile()?.margin).toBe(100);
 
       await new Promise((r) => setTimeout(r, 80));
@@ -1620,7 +1564,7 @@ describe("MoamelatClient", () => {
         .mockReturnValueOnce(createMockResponse(profile))
         .mockReturnValueOnce(createMockResponse({ success: true, data: { message: "ok" } }));
 
-      await testClient.loginByIdentifier("0910", "pass");
+      await testClient.login("0910", "pass");
       await testClient.logout();
 
       const callCountAfterLogout = fetchMock.mock.calls.length;
